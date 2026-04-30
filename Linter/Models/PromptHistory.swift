@@ -4,7 +4,6 @@ import Observation
 struct PromptEntry: Identifiable, Codable, Equatable, Hashable {
     var id: UUID
     var text: String
-    var templateID: String
     var date: Date
 }
 
@@ -40,18 +39,17 @@ final class PromptHistory {
     }
 
     /// Record a new prompt. Most recent first. Drops trailing entries past the cap.
-    /// If the most recent entry has the same text + template, skip it (avoid dupes
+    /// If the most recent entry has the same text, skip it (avoid dupes
     /// from re-running the same input back-to-back).
-    func record(text: String, templateID: String) {
+    func record(text: String) {
         // Trim before both checking AND storing, so we don't persist surrounding
         // whitespace and re-load it that way next session.
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        if let first = entries.first,
-           first.text == trimmed, first.templateID == templateID {
+        if let first = entries.first, first.text == trimmed {
             return
         }
-        let entry = PromptEntry(id: UUID(), text: trimmed, templateID: templateID, date: Date())
+        let entry = PromptEntry(id: UUID(), text: trimmed, date: Date())
         var next = [entry] + entries
         if next.count > Self.maxEntries {
             next.removeLast(next.count - Self.maxEntries)

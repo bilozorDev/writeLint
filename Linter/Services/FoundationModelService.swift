@@ -1,5 +1,15 @@
 import Foundation
 import FoundationModels
+import os
+
+/// Lint pipeline tracing. Writes through Apple's unified logging — visible in
+/// Xcode's console while running, and in Console.app filtering for subsystem
+/// "Hexaget.Linter" / category "lint" while the app runs standalone.
+/// Inputs/outputs are marked `.public` so they actually appear in the logs
+/// (Logger redacts dynamic strings to `<private>` by default). User text is
+/// not sensitive in this app — the whole point is to see exactly what the
+/// model received and emitted.
+private let lintLog = Logger(subsystem: "Hexaget.Linter", category: "lint")
 
 enum LintError: Error, LocalizedError {
     case modelUnavailable(String)
@@ -52,9 +62,16 @@ final class FoundationModelService {
         }
     }
 
-    func lint(text: String, template: Template) async throws -> LintResult {
+    /// Polish `text` using `instructions` as the entire system prompt sent
+    /// to the model. The instructions string is the *only* input that
+    /// shapes the model's behavior — no separately-injected few-shot turns,
+    /// no schema-side hints layered on top. Examples (if any) live inside
+    /// the instructions text so they're visible to the user in Advanced
+    /// Mode.
+    func lint(text: String, instructions: String) async throws -> LintResult {
         guard case .available = availability else {
             if case .unavailable(let reason, _) = availability {
+                lintLog.error("model unavailable: \(reason, privacy: .public)")
                 throw LintError.modelUnavailable(reason)
             }
             throw LintError.modelUnavailable("Model unavailable.")
@@ -71,35 +88,52 @@ final class FoundationModelService {
         // Low temperature → deterministic polishing, no creative rewrites.
         let options = GenerationOptions(temperature: 0.2, maximumResponseTokens: 4096)
 
+        lintLog.notice("─── lint start: chunks=\(chunks.count) input=\(Self.quoteForLog(text), privacy: .public)")
+
         do {
             var output = ""
-            for chunk in chunks {
+            for (i, chunk) in chunks.enumerated() {
                 if Task.isCancelled { throw LintError.cancelled }
                 if chunk.isSeparator {
+                    lintLog.debug("chunk \(i): separator (\(chunk.text.count) chars) — passthrough")
                     output += chunk.text
                     continue
                 }
                 let trimmed = chunk.text.trimmingCharacters(in: .whitespacesAndNewlines)
                 if trimmed.isEmpty {
+                    lintLog.debug("chunk \(i): blank — passthrough")
                     output += chunk.text
                     continue
                 }
                 // Fresh session per chunk so context doesn't bleed between
-                // independent paragraphs. Replays the few-shot every time.
-                let session = LanguageModelSession(transcript: Self.buildTranscript(template: template))
+                // independent paragraphs. The session's only input is the
+                // user-controlled `instructions` string — examples,
+                // constraints, and rules all live in there.
+                let session = LanguageModelSession(transcript: Self.buildTranscript(instructions: instructions))
+                lintLog.notice("chunk \(i): in=\(Self.quoteForLog(chunk.text), privacy: .public)")
                 let response = try await session.respond(
                     to: chunk.text,
                     generating: PolishedText.self,
                     options: options
                 )
-                let polished = response.content.polished.trimmingCharacters(in: .whitespacesAndNewlines)
+                let raw = response.content.polished
+                let polished = raw.trimmingCharacters(in: .whitespacesAndNewlines)
                 let cleaned = stripWrappingQuotes(polished)
+                lintLog.notice("chunk \(i): raw=\(Self.quoteForLog(raw), privacy: .public)")
+                if cleaned != polished {
+                    lintLog.notice("chunk \(i): stripped wrapping quotes")
+                }
                 // Hallucination guard — fall back to original chunk if the
                 // model expanded the text (acronym expansion, invented
                 // connectors). Better to no-op than to ship hallucinations.
-                if Self.looksHallucinated(input: chunk.text, output: cleaned) {
+                if let reason = Self.hallucinationReason(input: chunk.text, output: cleaned) {
+                    lintLog.notice("chunk \(i): HALLUCINATED (\(reason.description, privacy: .public)) — falling back to original")
                     output += chunk.text
+                } else if cleaned == chunk.text.trimmingCharacters(in: .whitespacesAndNewlines) {
+                    lintLog.notice("chunk \(i): NO-OP (model returned input verbatim)")
+                    output += cleaned
                 } else {
+                    lintLog.notice("chunk \(i): out=\(Self.quoteForLog(cleaned), privacy: .public)")
                     output += cleaned
                 }
             }
@@ -109,62 +143,67 @@ final class FoundationModelService {
                 + Double(elapsed.components.attoseconds) / 1e15)
             let ops = Diff.diff(text, output)
             let stats = Diff.countChanges(ops)
+            lintLog.notice("─── lint done: latency=\(latencyMs)ms +\(stats.added)/-\(stats.removed) words, final=\(Self.quoteForLog(output), privacy: .public)")
             return LintResult(output: output, ops: ops, stats: stats, latencyMs: latencyMs)
         } catch is CancellationError {
+            lintLog.notice("lint cancelled")
             throw LintError.cancelled
         } catch let e as LintError {
+            lintLog.error("lint failed: \(e.localizedDescription, privacy: .public)")
             throw e
         } catch {
+            lintLog.error("lint failed: \(error.localizedDescription, privacy: .public)")
             throw LintError.underlying(error)
         }
     }
 
-    /// Builds the session transcript: instructions + replayed user/assistant
-    /// few-shot pairs from the template. The model treats each pair as a
-    /// realized prior turn, which is more reliable than embedding examples
-    /// inside the instructions string.
-    private static func buildTranscript(template: Template) -> Transcript {
-        var entries: [Transcript.Entry] = []
-        entries.append(.instructions(.init(
-            segments: [.text(.init(content: template.instructions))],
-            toolDefinitions: []
-        )))
-        for example in template.fewShot ?? [] {
-            entries.append(.prompt(.init(
-                segments: [.text(.init(content: example.input))]
-            )))
-            // Few-shot "assistant" responses match the guided-generation
-            // shape so the model learns the response format. We encode the
-            // example output as the structured `PolishedText` JSON.
-            let payload = "{\"polished\":\(Self.jsonString(example.output))}"
-            entries.append(.response(.init(
-                assetIDs: [],
-                segments: [.text(.init(content: payload))]
-            )))
-        }
-        return Transcript(entries: entries)
+    /// Render a string for log output: wrap in quotes, escape literal newlines
+    /// to `\n` so a multi-line value stays on one log line and is comparable
+    /// to other one-line values.
+    private static func quoteForLog(_ s: String) -> String {
+        let escaped = s
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "\n", with: "\\n")
+            .replacingOccurrences(of: "\r", with: "\\r")
+            .replacingOccurrences(of: "\t", with: "\\t")
+        return "\"\(escaped)\""
     }
 
-    /// Minimal JSON string escaper for the few-shot response payload.
-    private static func jsonString(_ s: String) -> String {
-        var out = "\""
-        for ch in s {
-            switch ch {
-            case "\"": out += "\\\""
-            case "\\": out += "\\\\"
-            case "\n": out += "\\n"
-            case "\r": out += "\\r"
-            case "\t": out += "\\t"
-            default:
-                if ch.asciiValue.map({ $0 < 0x20 }) ?? false {
-                    out += String(format: "\\u%04x", Int(ch.asciiValue!))
-                } else {
-                    out.append(ch)
-                }
+    /// Builds a minimal session transcript: just the user's instructions
+    /// as a system message. We deliberately don't inject transcript-based
+    /// few-shot turns — the on-device model overfits to specific phrases
+    /// in those turns and parrots them into responses (we hit this with
+    /// a "Hey, Katie" example that ended up prefixing every output). Any
+    /// few-shot examples now live inline in the `instructions` string,
+    /// where they're visible to the user in Advanced Mode.
+    private static func buildTranscript(instructions: String) -> Transcript {
+        Transcript(entries: [
+            .instructions(.init(
+                segments: [.text(.init(content: instructions))],
+                toolDefinitions: []
+            ))
+        ])
+    }
+
+    /// Specific reason `hallucinationReason` flagged an output. Surfaced via
+    /// `lintLog` so we can tell from the log which guard tripped, instead of
+    /// just "the fallback fired."
+    enum HallucinationReason: CustomStringConvertible {
+        case addedParens
+        case wordCountExpansion(input: Int, output: Int)
+        case leakedPhrase(String)
+
+        var description: String {
+            switch self {
+            case .addedParens:
+                return "added-parens"
+            case .wordCountExpansion(let i, let o):
+                return "word-expansion \(i)→\(o)"
+            case .leakedPhrase(let p):
+                return "leaked-phrase \"\(p)\""
             }
         }
-        out += "\""
-        return out
     }
 
     /// Heuristic check that catches the most common hallucination modes
@@ -175,9 +214,11 @@ final class FoundationModelService {
     ///      regurgitates fragments of its own response-format directive
     ///      (e.g. trailing "response format in json.") inside the polished
     ///      string. Reject any output that introduces those phrases.
-    static func looksHallucinated(input: String, output: String) -> Bool {
+    static func hallucinationReason(input: String, output: String) -> HallucinationReason? {
         // 1. Parens in output that weren't in input.
-        if output.contains("(") && !input.contains("(") { return true }
+        if output.contains("(") && !input.contains("(") {
+            return .addedParens
+        }
 
         // 2. >30% more words than the input (only enforced for inputs of
         //    meaningful length so a 2-word input can still gain a few words
@@ -185,7 +226,7 @@ final class FoundationModelService {
         let inputWords = input.split(whereSeparator: { $0.isWhitespace }).count
         let outputWords = output.split(whereSeparator: { $0.isWhitespace }).count
         if inputWords >= 5, Double(outputWords) > Double(inputWords) * 1.3 {
-            return true
+            return .wordCountExpansion(input: inputWords, output: outputWords)
         }
 
         // 3. Schema/instruction leakage. These are phrases the user almost
@@ -207,10 +248,16 @@ final class FoundationModelService {
         ]
         for phrase in leakedPhrases {
             if lowerOut.contains(phrase), !lowerIn.contains(phrase) {
-                return true
+                return .leakedPhrase(phrase)
             }
         }
-        return false
+        return nil
+    }
+
+    /// Convenience boolean wrapper around `hallucinationReason` — kept so
+    /// existing callers / tests don't need to unpack the enum.
+    static func looksHallucinated(input: String, output: String) -> Bool {
+        hallucinationReason(input: input, output: output) != nil
     }
 
     private struct Chunk {

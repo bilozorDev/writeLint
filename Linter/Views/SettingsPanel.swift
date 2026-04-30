@@ -1,73 +1,17 @@
 import SwiftUI
 
 struct SettingsPanel: View {
-    @Bindable var store: TemplateStore
+    @Bindable var store: PromptStore
     @Binding var hotkey: Hotkey
     @Binding var diffStyle: DiffStyle
     @Binding var autoHide: Bool
     let dark: Bool
 
-    @State private var editingID: String?
+    /// Set to true while the revert confirmation dialog is on screen.
+    @State private var confirmingRevert = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            // Templates
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    sectionLabel("Templates")
-                    Spacer()
-                    if editingID == nil {
-                        Button {
-                            // UUID instead of timestamp — two clicks within the
-                            // same second would otherwise collide and `update`
-                            // / `delete` would target only the first match.
-                            let new = Template(
-                                id: "tpl_" + UUID().uuidString,
-                                name: "New Template",
-                                icon: "sparkles",
-                                colorHex: "#BF5AF2",
-                                instructions: ""
-                            )
-                            store.add(new)
-                            editingID = new.id
-                        } label: {
-                            HStack(spacing: 4) {
-                                Image(systemName: "plus").font(.system(size: 10, weight: .bold))
-                                Text("New").font(.system(size: 11.5, weight: .semibold))
-                            }
-                            .foregroundStyle(Palette.accent)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(.leading, 4)
-
-                VStack(spacing: 2) {
-                    ForEach(Array(store.templates.enumerated()), id: \.element.id) { idx, tpl in
-                        TemplateRow(
-                            template: tpl,
-                            index: idx,
-                            isSelected: store.selectedID == tpl.id,
-                            isEditing: editingID == tpl.id,
-                            dark: dark,
-                            onSelect: { store.selectedID = tpl.id },
-                            onEdit: { editingID = tpl.id },
-                            onSave: { updated in
-                                store.update(updated)
-                                editingID = nil
-                            },
-                            onCancel: { editingID = nil },
-                            onDelete: {
-                                store.delete(id: tpl.id)
-                                editingID = nil
-                            }
-                        )
-                    }
-                }
-            }
-
-            divider
-
             // Shortcut
             VStack(alignment: .leading, spacing: 8) {
                 sectionLabel("Global Shortcut").padding(.leading, 4)
@@ -123,6 +67,33 @@ struct SettingsPanel: View {
             }
             .padding(.horizontal, 4)
 
+            divider
+
+            // Advanced mode toggle. Off by default; flipping it on reveals
+            // the prompt editor + Revert button below.
+            HStack {
+                Image(systemName: "wand.and.stars")
+                    .font(.system(size: 14))
+                    .foregroundStyle(Palette.sub(dark))
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Advanced mode")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(Palette.text(dark))
+                    Text("Edit the prompt sent to the on-device model")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Palette.sub(dark))
+                }
+                Spacer()
+                Toggle("", isOn: $store.advancedMode)
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+            }
+            .padding(.horizontal, 4)
+
+            if store.advancedMode {
+                advancedSection
+            }
+
             // Footer
             HStack(spacing: 6) {
                 Image(systemName: "apple.logo").font(.system(size: 11))
@@ -134,6 +105,59 @@ struct SettingsPanel: View {
             .padding(.top, 4)
         }
         .padding(14)
+        // Confirmation dialog for revert. The "Revert" button is destructive
+        // — it overwrites whatever's in the editor with `defaultInstructions`
+        // — so the user has to explicitly confirm.
+        .alert("Revert prompt to default?", isPresented: $confirmingRevert) {
+            Button("Cancel", role: .cancel) { }
+            Button("Revert", role: .destructive) {
+                store.revertToDefault()
+            }
+        } message: {
+            Text("Your customizations to the prompt will be deleted and replaced with the factory default. This can't be undone.")
+        }
+    }
+
+    @ViewBuilder
+    private var advancedSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                sectionLabel("Prompt")
+                Spacer()
+                Button {
+                    confirmingRevert = true
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "arrow.uturn.backward")
+                            .font(.system(size: 10, weight: .semibold))
+                        Text("Revert to default")
+                            .font(.system(size: 11.5, weight: .semibold))
+                    }
+                    .foregroundStyle(store.isAtDefault ? Palette.sub(dark) : Palette.removed)
+                }
+                .buttonStyle(.plain)
+                .disabled(store.isAtDefault)
+            }
+            .padding(.leading, 4)
+
+            // The on-device model receives this string verbatim as its
+            // system message. Examples are part of the prompt — they're
+            // not injected separately — so editing them here changes
+            // exactly what the model sees.
+            TextEditor(text: $store.instructions)
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundStyle(Palette.text(dark))
+                .scrollContentBackground(.hidden)
+                .padding(8)
+                .frame(minHeight: 220, maxHeight: 320)
+                .background(RoundedRectangle(cornerRadius: 7).fill(Palette.surface(dark)))
+                .overlay(RoundedRectangle(cornerRadius: 7).stroke(Palette.divider(dark), lineWidth: 0.5))
+
+            Text("This is the entire system prompt sent to the model — examples included.")
+                .font(.system(size: 10.5))
+                .foregroundStyle(Palette.sub(dark))
+                .padding(.leading, 4)
+        }
     }
 
     private var divider: some View {

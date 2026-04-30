@@ -23,12 +23,12 @@ struct LinterApp: App {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hotkey: Hotkey = HotkeyStore.shared.current
-    private var store: TemplateStore!
+    private var store: PromptStore!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
 
-        store = TemplateStore()
+        store = PromptStore()
         let storeRef = store!
 
         // Build the floating panel + its SwiftUI root.
@@ -50,7 +50,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 /// Wraps `LinterWindow` so the @State `hotkey` lives in a stable place and
 /// drives both the UI and the global Carbon registration.
 struct LinterRoot: View {
-    @Bindable var store: TemplateStore
+    @Bindable var store: PromptStore
     @State private var hotkey: Hotkey = HotkeyStore.shared.current
 
     var body: some View {

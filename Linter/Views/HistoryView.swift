@@ -2,7 +2,6 @@ import SwiftUI
 
 struct HistoryView: View {
     let entries: [PromptEntry]
-    let templates: [Template]
     let dark: Bool
     let onPick: (PromptEntry) -> Void
     let onClear: () -> Void
@@ -75,7 +74,6 @@ struct HistoryView: View {
                         ForEach(entries) { entry in
                             HistoryRow(
                                 entry: entry,
-                                template: templates.first { $0.id == entry.templateID },
                                 dark: dark,
                                 onPick: { onPick(entry) }
                             )
@@ -100,7 +98,6 @@ struct HistoryView: View {
 
 private struct HistoryRow: View {
     let entry: PromptEntry
-    let template: Template?
     let dark: Bool
     let onPick: () -> Void
     @State private var hover = false
@@ -108,22 +105,17 @@ private struct HistoryRow: View {
     var body: some View {
         Button(action: onPick) {
             HStack(alignment: .top, spacing: 10) {
-                if let template {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 5)
-                            .fill(Color(hex: template.colorHex))
-                        Image(systemName: template.icon)
-                            .font(.system(size: 9, weight: .semibold))
-                            .foregroundStyle(.white)
-                    }
-                    .frame(width: 18, height: 18)
-                    .padding(.top, 1)
-                } else {
+                // Static grammar badge — single-template app, so every
+                // history row is a grammar polish.
+                ZStack {
                     RoundedRectangle(cornerRadius: 5)
-                        .fill(Palette.surfaceStrong(dark))
-                        .frame(width: 18, height: 18)
-                        .padding(.top, 1)
+                        .fill(Color(hex: "#0A84FF"))
+                    Image(systemName: "pencil")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.white)
                 }
+                .frame(width: 18, height: 18)
+                .padding(.top, 1)
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(entry.text)
@@ -132,19 +124,9 @@ private struct HistoryRow: View {
                         .lineLimit(2)
                         .truncationMode(.tail)
                         .multilineTextAlignment(.leading)
-                    HStack(spacing: 6) {
-                        if let template {
-                            Text(template.name)
-                                .font(.system(size: 10.5))
-                                .foregroundStyle(Palette.sub(dark))
-                        }
-                        Text("·")
-                            .font(.system(size: 10.5))
-                            .foregroundStyle(Palette.sub(dark))
-                        Text(entry.date, format: .relative(presentation: .numeric))
-                            .font(.system(size: 10.5))
-                            .foregroundStyle(Palette.sub(dark))
-                    }
+                    Text(entry.date, format: .relative(presentation: .numeric))
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(Palette.sub(dark))
                 }
                 Spacer(minLength: 0)
             }

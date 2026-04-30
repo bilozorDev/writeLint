@@ -1,7 +1,6 @@
 import SwiftUI
 
 struct InputRow: View {
-    let template: Template
     @Binding var text: String
     let dark: Bool
     let thinking: Bool
@@ -13,12 +12,14 @@ struct InputRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 14) {
-            // Template badge — anchored to the top so it stays put as the
-            // text field grows downward.
+            // Static grammar badge — anchored to the top so it stays put as
+            // the text field grows downward. Now that the app is single-
+            // template (just grammar polishing), the icon and color are
+            // baked in instead of pulled from a Template model.
             ZStack {
                 RoundedRectangle(cornerRadius: 8)
-                    .fill(Color(hex: template.colorHex))
-                Image(systemName: template.icon)
+                    .fill(Color(hex: "#0A84FF"))
+                Image(systemName: "pencil")
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(.white)
             }
@@ -34,7 +35,7 @@ struct InputRow: View {
             // avoids fighting the panel's auto-resize and Writing Tools'
             // affordance windows.
             TextField(
-                "Type or paste text to lint with \(template.name)…",
+                "Type or paste text to polish…",
                 text: $text,
                 axis: .vertical
             )

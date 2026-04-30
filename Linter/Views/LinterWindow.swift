@@ -2,7 +2,7 @@ import SwiftUI
 import AppKit
 
 struct LinterWindow: View {
-    @Bindable var store: TemplateStore
+    @Bindable var store: PromptStore
     @Binding var hotkey: Hotkey
 
     @AppStorage("diffStyle.v1") private var diffStyleRaw: String = DiffStyle.stacked.rawValue
@@ -25,10 +25,6 @@ struct LinterWindow: View {
     /// while only the slide animates. Otherwise the simultaneous height grow
     /// + horizontal slide reads as a diagonal sweep.
     @State private var slideOffset: CGFloat = 0
-
-    /// Highlighted row in the slash-command popover (0-based against the
-    /// currently filtered set). Reset to 0 whenever the slash query changes.
-    @State private var slashSelectedIndex: Int = 0
 
     /// Hard cap on the scrollable area inside settings — passed to the
     /// settings page so its ScrollView clamps internally.
@@ -110,12 +106,6 @@ struct LinterWindow: View {
                 cancelLint()
             }
         }
-        .onChange(of: text) { _, _ in
-            // Whenever the query changes (text edit / paste / clear), reset
-            // the slash selection so the popover always opens on the first
-            // matching row.
-            slashSelectedIndex = 0
-        }
         .background(
             CommandKeyMonitor(
                 inputFocused: inputFocused,
@@ -124,22 +114,12 @@ struct LinterWindow: View {
                     setSettingsOpen(false)
                     historyOpen.toggle()
                 },
-                onNumber: { idx in
-                    store.selectByIndex(idx)
-                    result = nil
-                },
                 onEscape: {
                     if historyOpen { historyOpen = false }
                     else if settingsOpen { setSettingsOpen(false) }
                     else if result != nil { result = nil }
                     else { PanelController.shared.hide() }
-                },
-                slashHandler: SlashHandler(
-                    isOpen: { slashQuery != nil },
-                    onUp:    { slashMove(by: -1) },
-                    onDown:  { slashMove(by: 1) },
-                    onEnter: { slashPickCurrent() }
-                )
+                }
             )
         )
     }
@@ -147,44 +127,16 @@ struct LinterWindow: View {
     @ViewBuilder
     private var mainPage: some View {
         VStack(spacing: 0) {
-            TemplateTabs(
-                templates: store.templates,
-                selectedID: store.selectedID,
+            InputRow(
+                text: $text,
                 dark: dark,
-                onSelect: { id in
-                    store.selectedID = id
-                    result = nil
-                    cancelLint()
-                }
+                thinking: thinking,
+                hasResult: result != nil,
+                settingsOpen: settingsOpen,
+                isFocused: $inputFocused,
+                onSubmit: submit,
+                onToggleSettings: { setSettingsOpen(!settingsOpen) }
             )
-
-            ZStack(alignment: .top) {
-                InputRow(
-                    template: store.selected,
-                    text: $text,
-                    dark: dark,
-                    thinking: thinking,
-                    hasResult: result != nil,
-                    settingsOpen: settingsOpen,
-                    isFocused: $inputFocused,
-                    onSubmit: submit,
-                    onToggleSettings: { setSettingsOpen(!settingsOpen) }
-                )
-
-                // Slash command popover
-                if slashQuery != nil {
-                    SlashMenu(
-                        templates: slashFilteredTemplates,
-                        selectedIndex: slashSelectedIndex,
-                        dark: dark,
-                        onPick: { tpl in slashPick(tpl) }
-                    )
-                    .padding(.top, 52)
-                    .padding(.horizontal, 14)
-                    .transition(.opacity)
-                    .zIndex(2)
-                }
-            }
 
             if case .unavailable(let reason, let installing) = availability {
                 InlineErrorBar(message: reason, isInstalling: installing, dark: dark)
@@ -193,13 +145,9 @@ struct LinterWindow: View {
             if historyOpen {
                 HistoryView(
                     entries: history.entries,
-                    templates: store.templates,
                     dark: dark,
                     onPick: { entry in
                         text = entry.text
-                        if store.templates.contains(where: { $0.id == entry.templateID }) {
-                            store.selectedID = entry.templateID
-                        }
                         historyOpen = false
                         result = nil
                     },
@@ -302,45 +250,6 @@ struct LinterWindow: View {
         }
     }
 
-    private var slashQuery: String? {
-        let trimmed = text
-        guard trimmed.first == "/" else { return nil }
-        // only show when no spaces have been typed yet
-        let rest = String(trimmed.dropFirst())
-        if rest.contains(where: { $0.isWhitespace }) { return nil }
-        return rest
-    }
-
-    /// Filtered template list shown in the slash popover. Single source of
-    /// truth for both the renderer and the keyboard handler — they must
-    /// always agree on which row index maps to which template.
-    private var slashFilteredTemplates: [Template] {
-        guard let q = slashQuery else { return [] }
-        if q.isEmpty { return store.templates }
-        return store.templates.filter { $0.name.lowercased().contains(q.lowercased()) }
-    }
-
-    private func slashPick(_ tpl: Template) {
-        store.selectedID = tpl.id
-        text = ""
-        slashSelectedIndex = 0
-        inputFocused = true
-    }
-
-    private func slashPickCurrent() {
-        let filtered = slashFilteredTemplates
-        guard !filtered.isEmpty else { return }
-        let idx = max(0, min(slashSelectedIndex, filtered.count - 1))
-        slashPick(filtered[idx])
-    }
-
-    private func slashMove(by delta: Int) {
-        let count = slashFilteredTemplates.count
-        guard count > 0 else { return }
-        let next = (slashSelectedIndex + delta + count) % count
-        slashSelectedIndex = next
-    }
-
     private func submit() {
         // If a result is on screen, ⌘⏎ accepts it (matches the Accept button).
         // Otherwise, kick off a new lint.
@@ -351,15 +260,15 @@ struct LinterWindow: View {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         guard case .available = availability else { return }
         cancelLint()
-        history.record(text: text, templateID: store.selectedID)
-        let template = store.selected
+        history.record(text: text)
+        let instructions = store.instructions
         let toLint = text
         thinking = true
         result = nil
         copied = false
         lintTask = Task {
             do {
-                let r = try await FoundationModelService.shared.lint(text: toLint, template: template)
+                let r = try await FoundationModelService.shared.lint(text: toLint, instructions: instructions)
                 if Task.isCancelled { return }
                 await MainActor.run {
                     self.thinking = false
@@ -530,16 +439,7 @@ private struct FooterHint: View {
             HStack(spacing: 5) {
                 KbdLabel(text: "⌘", dark: dark)
                 KbdLabel(text: "↩", dark: dark)
-                Text("Lint")
-            }
-            HStack(spacing: 5) {
-                KbdLabel(text: "⌘", dark: dark)
-                KbdLabel(text: "1–9", dark: dark)
-                Text("Templates")
-            }
-            HStack(spacing: 5) {
-                KbdLabel(text: "/", dark: dark)
-                Text("Search")
+                Text("Polish")
             }
             HStack(spacing: 5) {
                 KbdLabel(text: "⌘", dark: dark)
@@ -560,37 +460,23 @@ private struct FooterHint: View {
     }
 }
 
-/// Bundle of slash-popover keyboard callbacks. When `isOpen()` returns true,
-/// the monitor intercepts ↑/↓ and ⏎ before the focused TextField sees them.
-struct SlashHandler {
-    var isOpen: () -> Bool
-    var onUp: () -> Void
-    var onDown: () -> Void
-    var onEnter: () -> Void
-}
-
-/// Catches ⌘+Return (submit), ⌘1..9 (template switch), Esc, slash-menu nav,
-/// and the main input's plain-⏎ → newline at the window level. The plain-⏎
-/// intercept fires only when the main input is focused — settings fields
-/// (template name TextField, instructions TextEditor) keep their native
-/// behavior because the monitor returns the event unchanged when
+/// Catches ⌘+Return (submit), ⌘+H (history), Esc, and the main input's
+/// plain-⏎ → newline at the window level. The plain-⏎ intercept fires only
+/// when the main input is focused — settings fields (TextEditor) keep their
+/// native behavior because the monitor returns the event unchanged when
 /// `inputFocused` is false.
 private struct CommandKeyMonitor: NSViewRepresentable {
     var inputFocused: Bool
     var onSubmit: () -> Void
     var onHistory: () -> Void
-    var onNumber: (Int) -> Void
     var onEscape: () -> Void
-    var slashHandler: SlashHandler
 
     func makeNSView(context: Context) -> NSView {
         let v = MonitorView()
         v.inputFocused = inputFocused
         v.onSubmit = onSubmit
         v.onHistory = onHistory
-        v.onNumber = onNumber
         v.onEscape = onEscape
-        v.slashHandler = slashHandler
         return v
     }
     func updateNSView(_ v: NSView, context: Context) {
@@ -598,17 +484,13 @@ private struct CommandKeyMonitor: NSViewRepresentable {
         v.inputFocused = inputFocused
         v.onSubmit = onSubmit
         v.onHistory = onHistory
-        v.onNumber = onNumber
         v.onEscape = onEscape
-        v.slashHandler = slashHandler
     }
     final class MonitorView: NSView {
         var inputFocused: Bool = false
         var onSubmit: (() -> Void)?
         var onHistory: (() -> Void)?
-        var onNumber: ((Int) -> Void)?
         var onEscape: (() -> Void)?
-        var slashHandler: SlashHandler?
         private var monitor: Any?
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
@@ -620,17 +502,6 @@ private struct CommandKeyMonitor: NSViewRepresentable {
                     // chords like ⌘+Return that we'd otherwise consume.
                     if HotkeyRecordingState.shared.isRecording {
                         return event
-                    }
-                    // Slash menu nav — when the popover is open, ↑/↓ move
-                    // selection and ⏎ picks the highlighted template instead
-                    // of inserting a newline into the TextField.
-                    if let slash = self.slashHandler, slash.isOpen() {
-                        switch event.keyCode {
-                        case 126: slash.onUp();    return nil   // up arrow
-                        case 125: slash.onDown();  return nil   // down arrow
-                        case 36, 76: slash.onEnter(); return nil // return / numpad
-                        default: break
-                        }
                     }
                     // ⌘+Return / ⌘+NumPad-Enter → submit
                     if (event.keyCode == 36 || event.keyCode == 76),
@@ -670,12 +541,6 @@ private struct CommandKeyMonitor: NSViewRepresentable {
                        !event.modifierFlags.contains(.control),
                        event.charactersIgnoringModifiers?.lowercased() == "h" {
                         self.onHistory?(); return nil
-                    }
-                    if event.modifierFlags.contains(.command),
-                       let chars = event.charactersIgnoringModifiers,
-                       chars.count == 1,
-                       let n = Int(chars), n >= 1, n <= 9 {
-                        self.onNumber?(n - 1); return nil
                     }
                     return event
                 }
