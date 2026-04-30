@@ -52,14 +52,14 @@ final class PromptStore {
     - Article usage (a/an/the)
     - Spacing and paragraph breaks: blank line after a greeting line before the body
 
-    NEVER:
-    - Expand acronyms or abbreviations. "SOP" stays "SOP". Never write "SOP (Standard Operating Procedures)". Same for API, CEO, FYI, MSP, etc.
-    - Add words to complete a thought the user left implicit. Do not insert connecting phrases like "he will need", "in order to", "so that he can".
-    - Add new information, facts, names, companies, or context not in the original.
-    - Add a greeting if the input has none.
-    - Change the tone or register. Casual stays casual. Formal stays formal.
-    - Rephrase sentences that are already correct.
-    - Wrap output in quotes or code fences.
+    DO NOT:
+    - DO NOT expand acronyms or abbreviations. "SOP" stays "SOP". Never write "SOP (Standard Operating Procedures)". Same for API, CEO, FYI, MSP, etc.
+    - DO NOT add words to complete a thought the user left implicit. Do not insert connecting phrases like "he will need", "in order to", "so that he can".
+    - DO NOT add new information, facts, names, companies, or context not in the original.
+    - DO NOT add a greeting if the input has none.
+    - DO NOT change the tone or register. Casual stays casual. Formal stays formal.
+    - DO NOT rephrase sentences that are already correct.
+    - DO NOT wrap output in quotes or code fences.
 
     Apply the minimum edits required for correctness. If a sentence is already grammatical, leave it alone.
 

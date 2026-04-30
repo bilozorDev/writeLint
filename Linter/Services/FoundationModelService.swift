@@ -62,6 +62,30 @@ final class FoundationModelService {
         }
     }
 
+    /// Pre-load the on-device model weights into memory so the first lint
+    /// after the user summons the panel doesn't pay the 100–300 ms cold-
+    /// start tax. Safe to call multiple times. No-ops if the model isn't
+    /// available (Apple Intelligence off, downloading, etc.).
+    func prewarm() {
+        guard case .available = availability else { return }
+        let session = LanguageModelSession(
+            transcript: Self.buildTranscript(instructions: "")
+        )
+        session.prewarm()
+    }
+
+    /// `true` for `GenerationError` cases where the right UX is to silently
+    /// return the user's original text instead of surfacing an error toast.
+    /// All three cases here are model-side conditions the user can't act on.
+    private static func isPassThroughableError(_ error: LanguageModelSession.GenerationError) -> Bool {
+        switch error {
+        case .guardrailViolation, .unsupportedLanguageOrLocale, .exceededContextWindowSize:
+            return true
+        default:
+            return false
+        }
+    }
+
     /// Polish `text` using `instructions` as the entire system prompt sent
     /// to the model. The instructions string is the *only* input that
     /// shapes the model's behavior — no separately-injected few-shot turns,
@@ -84,9 +108,6 @@ final class FoundationModelService {
         // so a long multi-paragraph input never blows past the model's response
         // token cap. Each chunk gets its own session for predictable behavior.
         let chunks = Self.splitIntoChunks(text)
-
-        // Low temperature → deterministic polishing, no creative rewrites.
-        let options = GenerationOptions(temperature: 0.2, maximumResponseTokens: 4096)
 
         lintLog.notice("─── lint start: chunks=\(chunks.count) input=\(Self.quoteForLog(text), privacy: .public)")
 
@@ -111,12 +132,53 @@ final class FoundationModelService {
                 // constraints, and rules all live in there.
                 let session = LanguageModelSession(transcript: Self.buildTranscript(instructions: instructions))
                 lintLog.notice("chunk \(i): in=\(Self.quoteForLog(chunk.text), privacy: .public)")
-                let response = try await session.respond(
-                    to: chunk.text,
-                    generating: PolishedText.self,
-                    options: options
+
+                // Per-chunk options.
+                // - greedy + temperature 0.0: deterministic minimal-edit
+                //   transduction; sampling adds variance that hurts quality
+                //   on this task per the GEC literature (Loem 2023, Coyne
+                //   2023, Staruch 2025).
+                // - maximumResponseTokens tied to chunk length: free
+                //   anti-hallucination guard at the decoder. Hallucinated
+                //   additions tend to be long; clipping at +50% prevents
+                //   the model from physically writing a fluency rewrite.
+                //   Floor of 64 protects very short chunks.
+                let cap = max(64, (chunk.text.count / 2) + 32)
+                let options = GenerationOptions(
+                    sampling: .greedy,
+                    temperature: 0.0,
+                    maximumResponseTokens: cap
                 )
-                let raw = response.content.polished
+
+                let raw: String
+                do {
+                    let response = try await session.respond(
+                        to: chunk.text,
+                        generating: PolishedText.self,
+                        // The schema is implicit because the on-device model
+                        // is post-trained on guided generation — sending it
+                        // again costs tokens for no quality gain.
+                        includeSchemaInPrompt: false,
+                        options: options
+                    )
+                    raw = response.content.polished
+                } catch let e as LanguageModelSession.GenerationError {
+                    // Pass through on known-benign generation errors:
+                    //   - guardrailViolation: false-positives are common; a
+                    //     polish-helper showing the user's text unchanged is
+                    //     strictly better than throwing.
+                    //   - unsupportedLanguageOrLocale: nothing we can do.
+                    //   - exceededContextWindowSize: rare given paragraph
+                    //     chunking, but clip-and-pass is acceptable.
+                    // Other GenerationError variants (assets downloading,
+                    // etc.) propagate so the user sees the toast.
+                    if Self.isPassThroughableError(e) {
+                        lintLog.notice("chunk \(i): GENERATION ERROR (\(String(describing: e), privacy: .public)) — passing original through")
+                        output += chunk.text
+                        continue
+                    }
+                    throw e
+                }
                 let polished = raw.trimmingCharacters(in: .whitespacesAndNewlines)
                 let cleaned = stripWrappingQuotes(polished)
                 lintLog.notice("chunk \(i): raw=\(Self.quoteForLog(raw), privacy: .public)")
@@ -192,6 +254,7 @@ final class FoundationModelService {
     enum HallucinationReason: CustomStringConvertible {
         case addedParens
         case wordCountExpansion(input: Int, output: Int)
+        case wordCountShrinkage(input: Int, output: Int)
         case leakedPhrase(String)
 
         var description: String {
@@ -200,6 +263,8 @@ final class FoundationModelService {
                 return "added-parens"
             case .wordCountExpansion(let i, let o):
                 return "word-expansion \(i)→\(o)"
+            case .wordCountShrinkage(let i, let o):
+                return "word-shrinkage \(i)→\(o)"
             case .leakedPhrase(let p):
                 return "leaked-phrase \"\(p)\""
             }
@@ -220,13 +285,20 @@ final class FoundationModelService {
             return .addedParens
         }
 
-        // 2. >30% more words than the input (only enforced for inputs of
-        //    meaningful length so a 2-word input can still gain a few words
-        //    legitimately for grammar fixes).
+        // 2. Length-ratio guard, ±20% around the input word count. Only
+        //    enforced for inputs ≥5 words so a 2-word input can still
+        //    legitimately gain articles/punctuation fixes. Tightened from
+        //    1.3× per the GEC research recommendation of [0.8, 1.2].
+        //    The lower bound catches the rare case where the model deletes
+        //    legitimate content; gated to ≥8 words to leave room for
+        //    duplicate removal ("the the" → "the") on shorter inputs.
         let inputWords = input.split(whereSeparator: { $0.isWhitespace }).count
         let outputWords = output.split(whereSeparator: { $0.isWhitespace }).count
-        if inputWords >= 5, Double(outputWords) > Double(inputWords) * 1.3 {
+        if inputWords >= 5, Double(outputWords) > Double(inputWords) * 1.2 {
             return .wordCountExpansion(input: inputWords, output: outputWords)
+        }
+        if inputWords >= 8, Double(outputWords) < Double(inputWords) * 0.8 {
+            return .wordCountShrinkage(input: inputWords, output: outputWords)
         }
 
         // 3. Schema/instruction leakage. These are phrases the user almost

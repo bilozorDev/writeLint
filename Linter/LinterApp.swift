@@ -42,6 +42,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         GlobalHotkey.shared.setHotkey(HotkeyStore.shared.current)
 
+        // Pre-load the on-device model so the first lint after the user
+        // summons the panel doesn't pay the 100–300 ms cold-start tax.
+        FoundationModelService.shared.prewarm()
+
         // Show on first launch so the user sees the app immediately.
         PanelController.shared.show()
     }
