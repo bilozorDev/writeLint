@@ -18,8 +18,11 @@ struct SettingsPanel: View {
                     Spacer()
                     if editingID == nil {
                         Button {
+                            // UUID instead of timestamp — two clicks within the
+                            // same second would otherwise collide and `update`
+                            // / `delete` would target only the first match.
                             let new = Template(
-                                id: "tpl_\(Int(Date().timeIntervalSince1970))",
+                                id: "tpl_" + UUID().uuidString,
                                 name: "New Template",
                                 icon: "sparkles",
                                 colorHex: "#BF5AF2",

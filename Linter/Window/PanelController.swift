@@ -16,6 +16,12 @@ final class PanelController {
     /// (input text, result, settings open, etc.).
     var onHide: () -> Void = {}
 
+    /// Stamp incremented on every `show()`. The deferred onHide closure
+    /// captures the value at hide-time and only clears state if no new
+    /// session has started since — guards against the user re-summoning
+    /// faster than the runloop turn that fires onHide.
+    private var sessionStamp: Int = 0
+
     private init() {}
 
     func makePanel<Content: View>(@ViewBuilder content: () -> Content) {
@@ -38,6 +44,7 @@ final class PanelController {
 
     func show() {
         guard let panel else { return }
+        sessionStamp &+= 1
         centerOnActiveScreen()
         NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
@@ -49,7 +56,16 @@ final class PanelController {
 
     func hide() {
         panel?.orderOut(nil)
-        onHide()
+        // Defer the state-clearing closure to the next runloop turn so it
+        // never re-enters AppKit/SwiftUI mid-update if `hide()` was called
+        // from inside a layout pass or event handler. Skip if the user
+        // re-summoned in the meantime (sessionStamp changed).
+        let cb = onHide
+        let stamp = sessionStamp
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.sessionStamp == stamp else { return }
+            cb()
+        }
     }
 
     private func centerOnActiveScreen() {
@@ -63,11 +79,7 @@ final class PanelController {
         // BEFORE we read `panel.frame.size` for centering. Without this the
         // first show() centers using the seed contentRect (e.g. 580x60) and the
         // panel ends up offset.
-        if let hc = panel.contentViewController as? NSHostingController<AnyView> {
-            hc.loadViewIfNeeded()
-        } else {
-            panel.contentViewController?.loadViewIfNeeded()
-        }
+        panel.contentViewController?.loadViewIfNeeded()
         panel.layoutIfNeeded()
         // Disable the top-anchor on the very first placement so we honor the
         // user's chosen origin (Spotlight-ish above-center) instead of pinning

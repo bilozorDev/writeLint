@@ -8,6 +8,8 @@ struct HistoryView: View {
     let onClear: () -> Void
     let onClose: () -> Void
 
+    @State private var confirmingClear = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
@@ -17,10 +19,29 @@ struct HistoryView: View {
                     .foregroundStyle(Palette.sub(dark))
                 Spacer()
                 if !entries.isEmpty {
-                    Button("Clear", action: onClear)
-                        .buttonStyle(.plain)
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(Palette.sub(dark))
+                    if confirmingClear {
+                        HStack(spacing: 6) {
+                            Text("Clear all?")
+                                .font(.system(size: 11))
+                                .foregroundStyle(Palette.sub(dark))
+                            Button("Cancel") { confirmingClear = false }
+                                .buttonStyle(.plain)
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(Palette.sub(dark))
+                            Button("Clear all") {
+                                onClear()
+                                confirmingClear = false
+                            }
+                            .buttonStyle(.plain)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(Palette.removed)
+                        }
+                    } else {
+                        Button("Clear") { confirmingClear = true }
+                            .buttonStyle(.plain)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(Palette.sub(dark))
+                    }
                 }
                 Button {
                     onClose()
@@ -36,14 +57,17 @@ struct HistoryView: View {
             .padding(.horizontal, 12).padding(.top, 10).padding(.bottom, 8)
 
             if entries.isEmpty {
-                HStack {
-                    Spacer()
+                VStack(spacing: 6) {
                     Text("No history yet — your last 10 prompts will appear here.")
                         .font(.system(size: 12))
                         .foregroundStyle(Palette.sub(dark))
                         .multilineTextAlignment(.center)
-                    Spacer()
+                    Text("History is stored locally on this Mac in plain text.")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(Palette.sub(dark).opacity(0.7))
+                        .multilineTextAlignment(.center)
                 }
+                .frame(maxWidth: .infinity)
                 .padding(.horizontal, 16).padding(.vertical, 24)
             } else {
                 ScrollView {
@@ -60,6 +84,11 @@ struct HistoryView: View {
                     .padding(.horizontal, 6).padding(.bottom, 6)
                 }
                 .frame(maxHeight: 280)
+                Text("Stored locally on this Mac in plain text.")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Palette.sub(dark).opacity(0.7))
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.horizontal, 12).padding(.bottom, 8)
             }
         }
         .background(Palette.footerBg(dark))

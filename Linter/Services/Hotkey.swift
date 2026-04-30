@@ -68,21 +68,19 @@ struct Hotkey: Equatable, Codable, Hashable {
         }
 
         // In-app conflicts.
-        if (Int(keyCode) == kVK_Return || Int(keyCode) == kVK_ANSI_KeypadEnter) && onlyCmdShiftOptCtrl(.command) {
+        if (Int(keyCode) == kVK_Return || Int(keyCode) == kVK_ANSI_KeypadEnter) && isCmdOnly {
             return "⌘↩ is the in-app submit shortcut. Pick another chord."
         }
 
         return nil
     }
 
-    private func onlyCmdShiftOptCtrl(_ flag: NSEvent.ModifierFlags) -> Bool {
-        // Cmd-only check helper.
+    private var isCmdOnly: Bool {
         let hasShift = modifiers & UInt32(shiftKey)   != 0
         let hasOpt   = modifiers & UInt32(optionKey)  != 0
         let hasCtrl  = modifiers & UInt32(controlKey) != 0
         let hasCmd   = modifiers & UInt32(cmdKey)     != 0
-        if flag == .command { return hasCmd && !hasShift && !hasOpt && !hasCtrl }
-        return false
+        return hasCmd && !hasShift && !hasOpt && !hasCtrl
     }
 
     private struct SystemChord {

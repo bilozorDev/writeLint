@@ -27,6 +27,15 @@ struct LintResult {
     var latencyMs: Int
 }
 
+/// Guided-generation schema. Forces the model to emit just the polished text
+/// in a single JSON field — preamble like "Sure, here is the polished text:"
+/// becomes structurally impossible because there's no field for it.
+@Generable
+struct PolishedText {
+    @Guide(description: "The polished text only. No preamble, no commentary, no quote marks.")
+    let polished: String
+}
+
 @MainActor
 final class FoundationModelService {
     static let shared = FoundationModelService()
@@ -59,8 +68,8 @@ final class FoundationModelService {
         // token cap. Each chunk gets its own session for predictable behavior.
         let chunks = Self.splitIntoChunks(text)
 
-        // Generous per-chunk cap so a long single paragraph still completes.
-        let options = GenerationOptions(maximumResponseTokens: 4096)
+        // Low temperature → deterministic polishing, no creative rewrites.
+        let options = GenerationOptions(temperature: 0.2, maximumResponseTokens: 4096)
 
         do {
             var output = ""
@@ -75,11 +84,24 @@ final class FoundationModelService {
                     output += chunk.text
                     continue
                 }
-                let session = LanguageModelSession(instructions: template.instructions)
-                let response = try await session.respond(to: chunk.text, options: options)
-                let raw = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
-                let cleaned = stripWrappingQuotes(raw)
-                output += cleaned
+                // Fresh session per chunk so context doesn't bleed between
+                // independent paragraphs. Replays the few-shot every time.
+                let session = LanguageModelSession(transcript: Self.buildTranscript(template: template))
+                let response = try await session.respond(
+                    to: chunk.text,
+                    generating: PolishedText.self,
+                    options: options
+                )
+                let polished = response.content.polished.trimmingCharacters(in: .whitespacesAndNewlines)
+                let cleaned = stripWrappingQuotes(polished)
+                // Hallucination guard — fall back to original chunk if the
+                // model expanded the text (acronym expansion, invented
+                // connectors). Better to no-op than to ship hallucinations.
+                if Self.looksHallucinated(input: chunk.text, output: cleaned) {
+                    output += chunk.text
+                } else {
+                    output += cleaned
+                }
             }
 
             let elapsed = clock.now - start
@@ -95,6 +117,73 @@ final class FoundationModelService {
         } catch {
             throw LintError.underlying(error)
         }
+    }
+
+    /// Builds the session transcript: instructions + replayed user/assistant
+    /// few-shot pairs from the template. The model treats each pair as a
+    /// realized prior turn, which is more reliable than embedding examples
+    /// inside the instructions string.
+    private static func buildTranscript(template: Template) -> Transcript {
+        var entries: [Transcript.Entry] = []
+        entries.append(.instructions(.init(
+            segments: [.text(.init(content: template.instructions))],
+            toolDefinitions: []
+        )))
+        for example in template.fewShot ?? [] {
+            entries.append(.prompt(.init(
+                segments: [.text(.init(content: example.input))]
+            )))
+            // Few-shot "assistant" responses match the guided-generation
+            // shape so the model learns the response format. We encode the
+            // example output as the structured `PolishedText` JSON.
+            let payload = "{\"polished\":\(Self.jsonString(example.output))}"
+            entries.append(.response(.init(
+                assetIDs: [],
+                segments: [.text(.init(content: payload))]
+            )))
+        }
+        return Transcript(entries: entries)
+    }
+
+    /// Minimal JSON string escaper for the few-shot response payload.
+    private static func jsonString(_ s: String) -> String {
+        var out = "\""
+        for ch in s {
+            switch ch {
+            case "\"": out += "\\\""
+            case "\\": out += "\\\\"
+            case "\n": out += "\\n"
+            case "\r": out += "\\r"
+            case "\t": out += "\\t"
+            default:
+                if ch.asciiValue.map({ $0 < 0x20 }) ?? false {
+                    out += String(format: "\\u%04x", Int(ch.asciiValue!))
+                } else {
+                    out.append(ch)
+                }
+            }
+        }
+        out += "\""
+        return out
+    }
+
+    /// Heuristic check that catches the two most common hallucination modes
+    /// observed in production:
+    ///   1. Parenthetical expansion (e.g. "SOP" → "SOP (Standard Operating Procedures)").
+    ///   2. Significant word-count expansion (model invented connecting phrases).
+    static func looksHallucinated(input: String, output: String) -> Bool {
+        // 1. Parens in output that weren't in input.
+        if output.contains("(") && !input.contains("(") { return true }
+
+        // 2. >30% more words than the input (only enforced for inputs of
+        //    meaningful length so a 2-word input can still gain a few words
+        //    legitimately for grammar fixes).
+        let inputWords = input.split(whereSeparator: { $0.isWhitespace }).count
+        let outputWords = output.split(whereSeparator: { $0.isWhitespace }).count
+        if inputWords >= 5, Double(outputWords) > Double(inputWords) * 1.3 {
+            return true
+        }
+        return false
     }
 
     private struct Chunk {

@@ -111,27 +111,31 @@ struct LinterWindow: View {
                 .background(Palette.footerBg(dark))
             }
 
-            if thinking {
-                ThinkingBar(dark: dark)
-            } else if let r = result {
-                Divider().background(Palette.divider(dark))
-                ScrollView {
-                    DiffView(ops: r.ops, style: diffStyle.wrappedValue, dark: dark)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+            // Result + footer chain — gated on !historyOpen so the history
+            // popover doesn't render alongside them in the same panel.
+            if !historyOpen {
+                if thinking {
+                    ThinkingBar(dark: dark)
+                } else if let r = result {
+                    Divider().background(Palette.divider(dark))
+                    ScrollView {
+                        DiffView(ops: r.ops, style: diffStyle.wrappedValue, dark: dark)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: 360)
+                    .background(Palette.footerBg(dark))
+                    ResultActions(
+                        stats: r.stats,
+                        latencyMs: r.latencyMs,
+                        copied: copied,
+                        dark: dark,
+                        onCopy: handleCopy,
+                        onReject: { result = nil },
+                        onAccept: handleAccept
+                    )
+                } else if !settingsOpen {
+                    FooterHint(dark: dark, hotkey: hotkey)
                 }
-                .frame(maxHeight: 360)
-                .background(Palette.footerBg(dark))
-                ResultActions(
-                    stats: r.stats,
-                    latencyMs: r.latencyMs,
-                    copied: copied,
-                    dark: dark,
-                    onCopy: handleCopy,
-                    onReject: { result = nil },
-                    onAccept: handleAccept
-                )
-            } else if !settingsOpen {
-                FooterHint(dark: dark, hotkey: hotkey)
             }
         }
         .frame(width: 660)
@@ -232,13 +236,29 @@ struct LinterWindow: View {
                     self.result = r
                     self.thinking = false
                 }
+            } catch is CancellationError {
+                return
+            } catch LintError.cancelled {
+                return
             } catch {
                 if Task.isCancelled { return }
                 await MainActor.run {
                     self.thinking = false
                     self.availability = FoundationModelService.shared.availability
+                    // Surface the failure so the user knows the lint didn't
+                    // silently disappear into the void.
+                    let msg = (error as? LocalizedError)?.errorDescription ?? "Linting failed."
+                    self.showToast(msg)
                 }
             }
+        }
+    }
+
+    private func showToast(_ text: String, duration: TimeInterval = 2.0) {
+        toast = text
+        DispatchQueue.main.asyncAfter(deadline: .now() + duration) {
+            // Only clear if the toast hasn't been replaced in the meantime.
+            if toast == text { toast = nil }
         }
     }
 
@@ -254,18 +274,23 @@ struct LinterWindow: View {
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(r.output, forType: .string)
-        // Replace the input text so if the user re-summons they see the
-        // accepted version.
-        text = r.output
-        result = nil
 
-        toast = "Copied to clipboard"
-        let shouldHide = autoHide
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.85) {
-            toast = nil
-            if shouldHide {
+        if autoHide {
+            // Replace the input text so the next summon shows the accepted
+            // version, then dismiss after the toast briefly shows. One timer
+            // does both — clears the toast and hides the panel — so there's
+            // no order-of-execution ambiguity between two competing timers.
+            text = r.output
+            result = nil
+            toast = "Copied to clipboard"
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.85) {
+                toast = nil
                 PanelController.shared.hide()
             }
+        } else {
+            // Keep the result on screen so the user can keep iterating /
+            // comparing. Just confirm the clipboard write.
+            showToast("Copied to clipboard", duration: 1.4)
         }
     }
 
@@ -392,12 +417,14 @@ private struct CommandKeyMonitor: NSViewRepresentable {
                     if event.keyCode == 53 /* esc */ {
                         self.onEscape?(); return nil
                     }
-                    // ⌘+H → toggle history
-                    if event.keyCode == 4 /* H */,
-                       event.modifierFlags.contains(.command),
+                    // ⌘+H → toggle history. Match by character (layout-aware)
+                    // rather than keyCode 4 — keyCode 4 isn't "H" on Dvorak/
+                    // Colemak/QWERTZ layouts.
+                    if event.modifierFlags.contains(.command),
                        !event.modifierFlags.contains(.shift),
                        !event.modifierFlags.contains(.option),
-                       !event.modifierFlags.contains(.control) {
+                       !event.modifierFlags.contains(.control),
+                       event.charactersIgnoringModifiers?.lowercased() == "h" {
                         self.onHistory?(); return nil
                     }
                     if event.modifierFlags.contains(.command),

@@ -1,12 +1,46 @@
 import Foundation
 import Observation
 
+struct FewShotExample: Codable, Equatable, Hashable {
+    var input: String
+    var output: String
+}
+
 struct Template: Identifiable, Codable, Equatable, Hashable {
     var id: String
     var name: String
     var icon: String
     var colorHex: String
     var instructions: String
+    /// Optional user/assistant example pairs replayed before the user's text.
+    /// Helps the model learn the exact style of correction we want for the
+    /// template (e.g. "SOP stays SOP, no parenthetical expansion").
+    var fewShot: [FewShotExample]?
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, icon, colorHex, instructions, fewShot
+    }
+
+    init(id: String, name: String, icon: String, colorHex: String, instructions: String, fewShot: [FewShotExample]? = nil) {
+        self.id = id
+        self.name = name
+        self.icon = icon
+        self.colorHex = colorHex
+        self.instructions = instructions
+        self.fewShot = fewShot
+    }
+
+    init(from decoder: Decoder) throws {
+        // Custom decode so older persisted templates (no `fewShot` key) keep
+        // working. Defaults missing fewShot to nil.
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        icon = try c.decode(String.self, forKey: .icon)
+        colorHex = try c.decode(String.self, forKey: .colorHex)
+        instructions = try c.decode(String.self, forKey: .instructions)
+        fewShot = try c.decodeIfPresent([FewShotExample].self, forKey: .fewShot)
+    }
 }
 
 extension Template {
@@ -20,7 +54,50 @@ extension Template {
     /// the stored value matches verbatim — if the user customized the prompt
     /// themselves, their changes are preserved.
     static let grammarLegacyInstructions: [String] = [
-        "You are an English teacher that checks grammar and punctuation. Don't modify text meaning, only apply grammar corrections and punctuation. Reply with only the corrected text — no preamble, no explanation."
+        "You are an English teacher that checks grammar and punctuation. Don't modify text meaning, only apply grammar corrections and punctuation. Reply with only the corrected text — no preamble, no explanation.",
+        // Prior prompt with embedded examples — replaced by the new
+        // strict-NEVER prompt + transcript-based few-shot.
+        """
+        You are a text polisher. Fix spelling, grammar, punctuation, capitalization, and spacing in the user's text while preserving their exact meaning and voice.
+
+        Specific rules:
+        - Greetings: comma after the name, not before ("Hey, Katie" → "Hey Katie,")
+        - Insert a blank line between a greeting line and the body
+        - Fix verb tense after did/does/do (use base form: "did it happened" → "did it happen")
+        - Add articles (a/an/the) where grammatically required
+        - Hyphenate compound modifiers before nouns ("one time hiccup" → "a one-time hiccup")
+        - Fix typos and capitalization (sentence starts, "i" → "I", proper nouns)
+
+        Hard constraints:
+        - NEVER add information, context, names, companies, or details that aren't in the original. If the source ends at "hiccup", the output ends at "hiccup." — never extend with invented context.
+        - NEVER change the tone or register (casual stays casual, formal stays formal).
+        - NEVER rewrite sentences that are already correct.
+        - NEVER add preamble, explanation, or wrap the output in quotes or code fences.
+        - Output only the polished text.
+
+        Examples:
+
+        Input:
+        Hey, Katie
+        Did it happened since last week? maybe it was one time hcikup
+
+        Output:
+        Hey Katie,
+
+        Did it happen since last week? Maybe it was a one-time hiccup.
+
+        Input:
+        thanks for the help
+
+        Output:
+        Thanks for the help.
+
+        Input:
+        lol that's wild
+
+        Output:
+        lol that's wild
+        """
     ]
 
     static let defaults: [Template] = [
@@ -30,46 +107,41 @@ extension Template {
             icon: "pencil",
             colorHex: "#0A84FF",
             instructions: """
-            You are a text polisher. Fix spelling, grammar, punctuation, capitalization, and spacing in the user's text while preserving their exact meaning and voice.
+            You are a text polisher. Rewrite the user's text to be clean and natural while preserving their voice, meaning, and structure.
 
-            Specific rules:
-            - Greetings: comma after the name, not before ("Hey, Katie" → "Hey Katie,")
-            - Insert a blank line between a greeting line and the body
-            - Fix verb tense after did/does/do (use base form: "did it happened" → "did it happen")
-            - Add articles (a/an/the) where grammatically required
-            - Hyphenate compound modifiers before nouns ("one time hiccup" → "a one-time hiccup")
-            - Fix typos and capitalization (sentence starts, "i" → "I", proper nouns)
+            Fix:
+            - Spelling and typos
+            - Grammar and verb tense (e.g., "did it happened" → "did it happen", "he sell" → "he sells")
+            - Punctuation, including comma placement around names in greetings ("Hey, Katie" → "Hey Katie,")
+            - Capitalization (sentence starts, "i" → "I", proper nouns)
+            - Article usage (a/an/the) where grammatically required
+            - Spacing and paragraph breaks: blank line after a greeting line before the body
 
-            Hard constraints:
-            - NEVER add information, context, names, companies, or details that aren't in the original. If the source ends at "hiccup", the output ends at "hiccup." — never extend with invented context.
-            - NEVER change the tone or register (casual stays casual, formal stays formal).
-            - NEVER rewrite sentences that are already correct.
-            - NEVER add preamble, explanation, or wrap the output in quotes or code fences.
-            - Output only the polished text.
+            NEVER:
+            - Expand acronyms or abbreviations. "SOP" stays "SOP". Never write "SOP (Standard Operating Procedures)". Same for API, CEO, FYI, MSP, etc.
+            - Add words to complete a thought the user left implicit. Do not insert connecting phrases like "he will need", "in order to", "so that he can".
+            - Add new information, facts, names, companies, or context not in the original.
+            - Add a greeting if the input has none.
+            - Change the tone or register. Casual stays casual. Formal stays formal.
+            - Rephrase sentences that are already correct.
+            - Wrap output in quotes or code fences.
 
-            Examples:
-
-            Input:
-            Hey, Katie
-            Did it happened since last week? maybe it was one time hcikup
-
-            Output:
-            Hey Katie,
-
-            Did it happen since last week? Maybe it was a one-time hiccup.
-
-            Input:
-            thanks for the help
-
-            Output:
-            Thanks for the help.
-
-            Input:
-            lol that's wild
-
-            Output:
-            lol that's wild
-            """
+            Apply the minimum edits required for correctness. If a sentence is already grammatical, leave it alone.
+            """,
+            fewShot: [
+                FewShotExample(
+                    input: "Hey, Katie\nDid it happened since last week? maybe it was one time hcikup",
+                    output: "Hey Katie,\n\nDid it happen since last week? Maybe it was a one-time hiccup."
+                ),
+                FewShotExample(
+                    input: "And u know most important to have SOP? When he sell company to show them all the documentation's",
+                    output: "And you know, most importantly, to have SOPs? When he sells the company to show them all the documentation."
+                ),
+                FewShotExample(
+                    input: "Thanks for the update — I'll review it tomorrow.",
+                    output: "Thanks for the update — I'll review it tomorrow."
+                )
+            ]
         ),
         Template(
             id: "spelling",
@@ -152,7 +224,10 @@ final class TemplateStore {
     }
 
     func update(_ template: Template) {
-        guard let idx = templates.firstIndex(where: { $0.id == template.id }) else { return }
+        guard let idx = templates.firstIndex(where: { $0.id == template.id }) else {
+            assertionFailure("Tried to update template id=\(template.id) that isn't in the store.")
+            return
+        }
         templates[idx] = template
     }
 

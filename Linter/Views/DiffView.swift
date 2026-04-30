@@ -84,7 +84,8 @@ private struct StackedDiffView: View {
             case .insert where filter == .corrected:
                 var seg = AttributedString(op.text)
                 seg.foregroundColor = NSColor(Color(hex: "#1A8C3E"))
-                seg.font = .systemFont(ofSize: 14, weight: .medium)
+                // The green color is enough emphasis; setting NSFont here
+                // would warn under strict concurrency (NSFont not Sendable).
                 attr.append(seg)
             default:
                 break
@@ -107,13 +108,43 @@ private struct HoverDiffView: View {
         enum Kind { case equal, change }
     }
 
-    private var segments: [Segment] {
-        var out: [Segment] = []
+    private struct Line: Identifiable {
+        let id = UUID()
+        let segments: [Segment]
+    }
+
+    /// Walk ops left-to-right, merging consecutive del/ins into single change
+    /// segments, AND splitting equal text on `\n` so the renderer can emit
+    /// real line breaks (FlowLayout itself only word-wraps; without splitting
+    /// here, multi-line input would pile onto one row).
+    private var lines: [Line] {
+        var out: [Line] = []
+        var current: [Segment] = []
+
+        func breakLine() {
+            out.append(Line(segments: current))
+            current = []
+        }
+
         var i = 0
         while i < ops.count {
             let op = ops[i]
             if op.kind == .equal {
-                out.append(Segment(kind: .equal, eqText: op.text, del: "", ins: ""))
+                let parts = op.text.components(separatedBy: "\n")
+                for (idx, part) in parts.enumerated() {
+                    if !part.isEmpty {
+                        current.append(Segment(kind: .equal, eqText: part, del: "", ins: ""))
+                    }
+                    if idx < parts.count - 1 {
+                        breakLine()
+                    }
+                }
+                // If the equal text ended with a newline, the last "part" is
+                // empty; commit the current line so the trailing newline
+                // becomes a visible blank line in the rendered diff.
+                if op.text.hasSuffix("\n") {
+                    breakLine()
+                }
                 i += 1
             } else {
                 var del = "", ins = ""
@@ -121,24 +152,48 @@ private struct HoverDiffView: View {
                     if ops[i].kind == .delete { del += ops[i].text } else { ins += ops[i].text }
                     i += 1
                 }
-                out.append(Segment(kind: .change, eqText: "", del: del, ins: ins))
+                // Split inserted text on newlines so a multi-line change
+                // wraps across multiple lines instead of becoming one tall
+                // FlowLayout block. Deletion text shows in the hover tooltip
+                // — attach it only to the first piece so it isn't repeated.
+                let insParts = ins.components(separatedBy: "\n")
+                for (idx, insPart) in insParts.enumerated() {
+                    let segDel = (idx == 0) ? del : ""
+                    current.append(Segment(kind: .change, eqText: "", del: segDel, ins: insPart))
+                    if idx < insParts.count - 1 {
+                        breakLine()
+                    }
+                }
             }
+        }
+        if !current.isEmpty || out.isEmpty {
+            breakLine()
         }
         return out
     }
 
     var body: some View {
-        FlowLayout(spacing: 0, lineSpacing: 4) {
-            ForEach(segments) { seg in
-                if seg.kind == .equal {
-                    Text(seg.eqText)
-                        .font(.system(size: 14))
-                        .foregroundStyle(Palette.text(dark))
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(lines) { line in
+                if line.segments.isEmpty {
+                    // Preserve blank lines.
+                    Text(" ").font(.system(size: 14))
                 } else {
-                    HoverChange(del: seg.del, ins: seg.ins, dark: dark)
+                    FlowLayout(spacing: 0, lineSpacing: 4) {
+                        ForEach(line.segments) { seg in
+                            if seg.kind == .equal {
+                                Text(seg.eqText)
+                                    .font(.system(size: 14))
+                                    .foregroundStyle(Palette.text(dark))
+                            } else {
+                                HoverChange(del: seg.del, ins: seg.ins, dark: dark)
+                            }
+                        }
+                    }
                 }
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 16).padding(.vertical, 14)
     }
 }
