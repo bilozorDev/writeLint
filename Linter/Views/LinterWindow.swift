@@ -26,6 +26,10 @@ struct LinterWindow: View {
     /// + horizontal slide reads as a diagonal sweep.
     @State private var slideOffset: CGFloat = 0
 
+    /// Highlighted row in the slash-command popover (0-based against the
+    /// currently filtered set). Reset to 0 whenever the slash query changes.
+    @State private var slashSelectedIndex: Int = 0
+
     @State private var mainPageHeight: CGFloat = 0
     // Settings page height is computed from two intrinsic measurements (header
     // + content) rather than measured at the page level. Measuring the page
@@ -140,6 +144,12 @@ struct LinterWindow: View {
                 cancelLint()
             }
         }
+        .onChange(of: text) { _, _ in
+            // Whenever the query changes (text edit / paste / clear), reset
+            // the slash selection so the popover always opens on the first
+            // matching row.
+            slashSelectedIndex = 0
+        }
         .background(
             CommandKeyMonitor(
                 onSubmit: { submit() },
@@ -156,7 +166,13 @@ struct LinterWindow: View {
                     else if settingsOpen { setSettingsOpen(false) }
                     else if result != nil { result = nil }
                     else { PanelController.shared.hide() }
-                }
+                },
+                slashHandler: SlashHandler(
+                    isOpen: { slashQuery != nil },
+                    onUp:    { slashMove(by: -1) },
+                    onDown:  { slashMove(by: 1) },
+                    onEnter: { slashPickCurrent() }
+                )
             )
         )
     }
@@ -189,16 +205,12 @@ struct LinterWindow: View {
                 )
 
                 // Slash command popover
-                if let q = slashQuery {
+                if slashQuery != nil {
                     SlashMenu(
-                        templates: store.templates,
-                        query: q,
+                        templates: slashFilteredTemplates,
+                        selectedIndex: slashSelectedIndex,
                         dark: dark,
-                        onPick: { tpl in
-                            store.selectedID = tpl.id
-                            text = ""
-                            inputFocused = true
-                        }
+                        onPick: { tpl in slashPick(tpl) }
                     )
                     .padding(.top, 52)
                     .padding(.horizontal, 14)
@@ -346,6 +358,36 @@ struct LinterWindow: View {
         let rest = String(trimmed.dropFirst())
         if rest.contains(where: { $0.isWhitespace }) { return nil }
         return rest
+    }
+
+    /// Filtered template list shown in the slash popover. Single source of
+    /// truth for both the renderer and the keyboard handler — they must
+    /// always agree on which row index maps to which template.
+    private var slashFilteredTemplates: [Template] {
+        guard let q = slashQuery else { return [] }
+        if q.isEmpty { return store.templates }
+        return store.templates.filter { $0.name.lowercased().contains(q.lowercased()) }
+    }
+
+    private func slashPick(_ tpl: Template) {
+        store.selectedID = tpl.id
+        text = ""
+        slashSelectedIndex = 0
+        inputFocused = true
+    }
+
+    private func slashPickCurrent() {
+        let filtered = slashFilteredTemplates
+        guard !filtered.isEmpty else { return }
+        let idx = max(0, min(slashSelectedIndex, filtered.count - 1))
+        slashPick(filtered[idx])
+    }
+
+    private func slashMove(by delta: Int) {
+        let count = slashFilteredTemplates.count
+        guard count > 0 else { return }
+        let next = (slashSelectedIndex + delta + count) % count
+        slashSelectedIndex = next
     }
 
     private func submit() {
@@ -567,14 +609,25 @@ private struct FooterHint: View {
     }
 }
 
-/// Catches ⌘+Return (submit), ⌘1..9 (template switch), and Esc at the window
-/// level — runs BEFORE the focused TextField sees the keyDown, so plain ⏎
-/// still falls through to the field for newline insertion.
+/// Bundle of slash-popover keyboard callbacks. When `isOpen()` returns true,
+/// the monitor intercepts ↑/↓ and ⏎ before the focused TextField sees them.
+struct SlashHandler {
+    var isOpen: () -> Bool
+    var onUp: () -> Void
+    var onDown: () -> Void
+    var onEnter: () -> Void
+}
+
+/// Catches ⌘+Return (submit), ⌘1..9 (template switch), Esc, and slash-menu
+/// nav at the window level — runs BEFORE the focused TextField sees the
+/// keyDown, so plain ⏎ still falls through to the field for newline
+/// insertion (unless the slash menu is open).
 private struct CommandKeyMonitor: NSViewRepresentable {
     var onSubmit: () -> Void
     var onHistory: () -> Void
     var onNumber: (Int) -> Void
     var onEscape: () -> Void
+    var slashHandler: SlashHandler
 
     func makeNSView(context: Context) -> NSView {
         let v = MonitorView()
@@ -582,6 +635,7 @@ private struct CommandKeyMonitor: NSViewRepresentable {
         v.onHistory = onHistory
         v.onNumber = onNumber
         v.onEscape = onEscape
+        v.slashHandler = slashHandler
         return v
     }
     func updateNSView(_ v: NSView, context: Context) {
@@ -590,12 +644,14 @@ private struct CommandKeyMonitor: NSViewRepresentable {
         v.onHistory = onHistory
         v.onNumber = onNumber
         v.onEscape = onEscape
+        v.slashHandler = slashHandler
     }
     final class MonitorView: NSView {
         var onSubmit: (() -> Void)?
         var onHistory: (() -> Void)?
         var onNumber: ((Int) -> Void)?
         var onEscape: (() -> Void)?
+        var slashHandler: SlashHandler?
         private var monitor: Any?
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
@@ -607,6 +663,17 @@ private struct CommandKeyMonitor: NSViewRepresentable {
                     // chords like ⌘+Return that we'd otherwise consume.
                     if HotkeyRecordingState.shared.isRecording {
                         return event
+                    }
+                    // Slash menu nav — when the popover is open, ↑/↓ move
+                    // selection and ⏎ picks the highlighted template instead
+                    // of inserting a newline into the TextField.
+                    if let slash = self.slashHandler, slash.isOpen() {
+                        switch event.keyCode {
+                        case 126: slash.onUp();    return nil   // up arrow
+                        case 125: slash.onDown();  return nil   // down arrow
+                        case 36, 76: slash.onEnter(); return nil // return / numpad
+                        default: break
+                        }
                     }
                     // ⌘+Return / ⌘+NumPad-Enter → submit
                     if (event.keyCode == 36 || event.keyCode == 76),

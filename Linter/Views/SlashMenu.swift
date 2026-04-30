@@ -1,22 +1,20 @@
 import SwiftUI
 
 struct SlashMenu: View {
+    /// Pre-filtered list — filtering lives in LinterWindow so the keyboard
+    /// handler and the renderer agree on the same set.
     let templates: [Template]
-    let query: String
+    let selectedIndex: Int
     let dark: Bool
     let onPick: (Template) -> Void
 
-    private var filtered: [Template] {
-        guard !query.isEmpty else { return templates }
-        return templates.filter { $0.name.lowercased().contains(query.lowercased()) }
-    }
-
     var body: some View {
-        if filtered.isEmpty {
+        if templates.isEmpty {
             EmptyView()
         } else {
             VStack(alignment: .leading, spacing: 0) {
-                ForEach(filtered) { tpl in
+                ForEach(Array(templates.enumerated()), id: \.element.id) { idx, tpl in
+                    let isSelected = idx == selectedIndex
                     Button { onPick(tpl) } label: {
                         HStack(spacing: 10) {
                             ZStack {
@@ -39,9 +37,13 @@ struct SlashMenu: View {
                         .padding(.horizontal, 9)
                         .padding(.vertical, 7)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(
+                            RoundedRectangle(cornerRadius: 7)
+                                .fill(isSelected ? Palette.accent.opacity(dark ? 0.22 : 0.12) : .clear)
+                        )
                         .contentShape(Rectangle())
                     }
-                    .buttonStyle(SlashRowStyle(dark: dark))
+                    .buttonStyle(SlashRowStyle(dark: dark, isSelected: isSelected))
                 }
             }
             .padding(4)
@@ -60,11 +62,12 @@ struct SlashMenu: View {
 
 private struct SlashRowStyle: ButtonStyle {
     let dark: Bool
+    let isSelected: Bool
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .background(
                 RoundedRectangle(cornerRadius: 7)
-                    .fill(configuration.isPressed ? Palette.surfaceStrong(dark) : .clear)
+                    .fill(configuration.isPressed && !isSelected ? Palette.surfaceStrong(dark) : .clear)
             )
             .contentShape(Rectangle())
     }
