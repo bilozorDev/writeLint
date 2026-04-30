@@ -19,6 +19,26 @@ struct LinterWindow: View {
     @State private var toast: String?
     @State private var history = PromptHistory.shared
 
+    /// X-offset of the page group. Animated via `withAnimation` in the
+    /// open/close helpers below — kept separate from `settingsOpen` so the
+    /// container's height (which derives from settingsOpen) snaps instantly
+    /// while only the slide animates. Otherwise the simultaneous height grow
+    /// + horizontal slide reads as a diagonal sweep.
+    @State private var slideOffset: CGFloat = 0
+
+    @State private var mainPageHeight: CGFloat = 0
+    // Settings page height is computed from two intrinsic measurements (header
+    // + content) rather than measured at the page level. Measuring the page
+    // itself created a circular dependency: the ScrollView's rendered height
+    // fed back as the proposal to the same ScrollView, settling at ~150pt.
+    // Header is intrinsically sized; content is measured inside the ScrollView
+    // (where vertical proposal is unbounded, so its size is purely intrinsic).
+    @State private var settingsHeaderHeight: CGFloat = 0
+    @State private var settingsContentHeight: CGFloat = 0
+
+    /// Hard cap on the scrollable area inside settings.
+    private let settingsScrollMax: CGFloat = 540
+
     @FocusState private var inputFocused: Bool
     @Environment(\.colorScheme) private var colorScheme
 
@@ -32,6 +52,117 @@ struct LinterWindow: View {
     }
 
     var body: some View {
+        // Both pages are always present in the tree, side by side. Only the
+        // group's X-offset animates — no conditional rendering means SwiftUI
+        // never re-measures the heavy SettingsPanel subtree on each frame
+        // (which was the source of the back-button freeze).
+        //
+        // The container's height is clamped to the *active* page's measured
+        // height so the inactive page doesn't pad the panel with empty space.
+        //
+        // Settings height = header (intrinsic) + min(content intrinsic, 540).
+        // We measure SettingsPanel from *inside* the ScrollView, where the
+        // vertical proposal is unbounded, so the measurement is purely a
+        // function of state (template count / editor open) — not of the
+        // proposal feeding back from the outer .frame. Measuring the page
+        // itself looped: ScrollView accepts whatever it's given → reports it
+        // back → page shrinks → ScrollView accepts smaller → settles at ~150.
+        //
+        // Generous fallbacks so the *first* open isn't visibly short while
+        // measurements settle on frame 1.
+        let settingsTotal = settingsHeaderHeight + min(settingsContentHeight, settingsScrollMax)
+        let activeHeight = settingsOpen
+            ? (settingsContentHeight > 0 ? settingsTotal : 540)
+            : (mainPageHeight > 0 ? mainPageHeight : 200)
+
+        HStack(alignment: .top, spacing: 0) {
+            mainPage
+                .frame(width: 660)
+                .background(
+                    GeometryReader { geo in
+                        Color.clear.preference(key: MainPageHeightKey.self, value: geo.size.height)
+                    }
+                )
+            settingsPage
+                .frame(width: 660)
+        }
+        // Height changes from `activeHeight` are NOT animated — they snap to
+        // the new page's intrinsic height. Only `slideOffset` is animated
+        // (via withAnimation in `setSettingsOpen`). This keeps the visible
+        // motion purely horizontal.
+        .frame(width: 660, height: activeHeight, alignment: .topLeading)
+        .offset(x: slideOffset)
+        .clipped()
+        .onPreferenceChange(MainPageHeightKey.self)        { mainPageHeight = $0 }
+        .onPreferenceChange(SettingsHeaderHeightKey.self)  { settingsHeaderHeight = $0 }
+        .onPreferenceChange(SettingsContentHeightKey.self) { settingsContentHeight = $0 }
+        .background(
+            // Brighter than .regularMaterial: thick material gives a more
+            // opaque base, plus a translucent white/black tint on top so it
+            // doesn't go bleak against very dark backdrops.
+            RoundedRectangle(cornerRadius: 18)
+                .fill(.thickMaterial)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 18)
+                        .fill(dark ? Color.white.opacity(0.06) : Color.white.opacity(0.55))
+                )
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18)
+                .stroke(dark ? .white.opacity(0.14) : .black.opacity(0.08), lineWidth: 0.5)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 18))
+        .overlay(alignment: .top) {
+            if let toast {
+                ToastView(text: toast, dark: dark)
+                    .padding(.top, 12)
+                    .transition(.opacity.combined(with: .offset(y: -4)))
+            }
+        }
+        .animation(.easeInOut(duration: 0.18), value: toast)
+        // Two-layer shadow: tight ambient + soft drop. Lower opacity than the
+        // design (which assumed dark wallpapers) so it doesn't read as a heavy
+        // gray band when the panel sits over a light surface.
+        .shadow(color: .black.opacity(0.12), radius: 4,  y: 2)
+        .shadow(color: .black.opacity(0.18), radius: 18, y: 10)
+        .padding(8)
+        .padding(28)
+        .onAppear {
+            availability = FoundationModelService.shared.availability
+            inputFocused = true
+            PanelController.shared.requestFocus = { inputFocused = true }
+            PanelController.shared.onHide = {
+                text = ""
+                result = nil
+                settingsOpen = false
+                slideOffset = 0
+                historyOpen = false
+                cancelLint()
+            }
+        }
+        .background(
+            CommandKeyMonitor(
+                onSubmit: { submit() },
+                onHistory: {
+                    setSettingsOpen(false)
+                    historyOpen.toggle()
+                },
+                onNumber: { idx in
+                    store.selectByIndex(idx)
+                    result = nil
+                },
+                onEscape: {
+                    if historyOpen { historyOpen = false }
+                    else if settingsOpen { setSettingsOpen(false) }
+                    else if result != nil { result = nil }
+                    else { PanelController.shared.hide() }
+                }
+            )
+        )
+    }
+
+    @ViewBuilder
+    private var mainPage: some View {
         VStack(spacing: 0) {
             TemplateTabs(
                 templates: store.templates,
@@ -54,7 +185,7 @@ struct LinterWindow: View {
                     settingsOpen: settingsOpen,
                     isFocused: $inputFocused,
                     onSubmit: submit,
-                    onToggleSettings: { settingsOpen.toggle() }
+                    onToggleSettings: { setSettingsOpen(!settingsOpen) }
                 )
 
                 // Slash command popover
@@ -96,124 +227,116 @@ struct LinterWindow: View {
                     onClear: { history.clear() },
                     onClose: { historyOpen = false }
                 )
-            } else if settingsOpen {
-                Divider().background(Palette.divider(dark))
-                ScrollView {
-                    SettingsPanel(
-                        store: store,
-                        hotkey: $hotkey,
-                        diffStyle: diffStyle,
-                        autoHide: $autoHide,
-                        dark: dark
+            } else if thinking {
+                ThinkingBar(dark: dark)
+            } else if let r = result {
+                if r.stats.added == 0 && r.stats.removed == 0 {
+                    CleanBar(
+                        latencyMs: r.latencyMs,
+                        copied: copied,
+                        dark: dark,
+                        onCopy: handleCopy
+                    )
+                } else {
+                    Divider().background(Palette.divider(dark))
+                    ScrollView {
+                        DiffView(ops: r.ops, style: diffStyle.wrappedValue, dark: dark)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: 360)
+                    .background(Palette.footerBg(dark))
+                    ResultActions(
+                        stats: r.stats,
+                        latencyMs: r.latencyMs,
+                        copied: copied,
+                        dark: dark,
+                        onCopy: handleCopy,
+                        onReject: { result = nil },
+                        onAccept: handleAccept
                     )
                 }
-                .frame(maxHeight: 540)
-                .background(Palette.footerBg(dark))
+            } else {
+                FooterHint(dark: dark, hotkey: hotkey)
             }
+        }
+    }
 
-            // Result + footer chain — gated on !historyOpen so the history
-            // popover doesn't render alongside them in the same panel.
-            if !historyOpen {
-                if thinking {
-                    ThinkingBar(dark: dark)
-                } else if let r = result {
-                    if r.stats.added == 0 && r.stats.removed == 0 {
-                        // No changes — skip the full diff and show a small
-                        // confirmation bar instead. The user can copy or
-                        // dismiss themselves (Esc / click-away); we never
-                        // auto-close because there's nothing to "accept".
-                        CleanBar(
-                            latencyMs: r.latencyMs,
-                            copied: copied,
-                            dark: dark,
-                            onCopy: handleCopy
-                        )
-                    } else {
-                        Divider().background(Palette.divider(dark))
-                        ScrollView {
-                            DiffView(ops: r.ops, style: diffStyle.wrappedValue, dark: dark)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        .frame(maxHeight: 360)
-                        .background(Palette.footerBg(dark))
-                        ResultActions(
-                            stats: r.stats,
-                            latencyMs: r.latencyMs,
-                            copied: copied,
-                            dark: dark,
-                            onCopy: handleCopy,
-                            onReject: { result = nil },
-                            onAccept: handleAccept
-                        )
+    @ViewBuilder
+    private var settingsPage: some View {
+        VStack(spacing: 0) {
+            // Header — back button + title. The back button is the symmetric
+            // counterpart to the gear in the input row: it returns the user
+            // to the main page with a reverse slide.
+            HStack(spacing: 8) {
+                Button { setSettingsOpen(false) } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 12, weight: .semibold))
+                        Text("Back")
+                            .font(.system(size: 13, weight: .medium))
                     }
-                } else if !settingsOpen {
-                    FooterHint(dark: dark, hotkey: hotkey)
+                    .foregroundStyle(Palette.text(dark))
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+                    .background(
+                        RoundedRectangle(cornerRadius: 7)
+                            .fill(Palette.surface(dark))
+                            .overlay(RoundedRectangle(cornerRadius: 7).stroke(Palette.divider(dark), lineWidth: 0.5))
+                    )
                 }
+                .buttonStyle(.plain)
+                .keyboardShortcut(.escape, modifiers: [])
+
+                Spacer()
+                Text("Settings")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Palette.text(dark))
+                Spacer()
+                // Width-balance the Back button so the title sits centered.
+                Color.clear.frame(width: 70, height: 1)
             }
-        }
-        .frame(width: 660)
-        .background(
-            // Brighter than .regularMaterial: thick material gives a more
-            // opaque base, plus a translucent white/black tint on top so it
-            // doesn't go bleak against very dark backdrops.
-            RoundedRectangle(cornerRadius: 18)
-                .fill(.thickMaterial)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 18)
-                        .fill(dark ? Color.white.opacity(0.06) : Color.white.opacity(0.55))
-                )
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 18)
-                .stroke(dark ? .white.opacity(0.14) : .black.opacity(0.08), lineWidth: 0.5)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 18))
-        .overlay(alignment: .top) {
-            if let toast {
-                ToastView(text: toast, dark: dark)
-                    .padding(.top, 12)
-                    .transition(.opacity.combined(with: .offset(y: -4)))
+            .padding(.horizontal, 14).padding(.vertical, 12)
+            .overlay(alignment: .bottom) {
+                Rectangle().fill(Palette.divider(dark)).frame(height: 1)
             }
-        }
-        .animation(.easeInOut(duration: 0.18), value: toast)
-        // Two-layer shadow: tight ambient + soft drop. Lower opacity than the
-        // design (which assumed dark wallpapers) so it doesn't read as a heavy
-        // gray band when the panel sits over a light surface.
-        .shadow(color: .black.opacity(0.12), radius: 4,  y: 2)
-        .shadow(color: .black.opacity(0.18), radius: 18, y: 10)
-        .padding(8)
-        .padding(28)
-        .onAppear {
-            availability = FoundationModelService.shared.availability
-            inputFocused = true
-            PanelController.shared.requestFocus = { inputFocused = true }
-            PanelController.shared.onHide = {
-                text = ""
-                result = nil
-                settingsOpen = false
-                historyOpen = false
-                cancelLint()
-            }
-        }
-        .background(
-            CommandKeyMonitor(
-                onSubmit: { submit() },
-                onHistory: {
-                    settingsOpen = false
-                    historyOpen.toggle()
-                },
-                onNumber: { idx in
-                    store.selectByIndex(idx)
-                    result = nil
-                },
-                onEscape: {
-                    if historyOpen { historyOpen = false }
-                    else if settingsOpen { settingsOpen = false }
-                    else if result != nil { result = nil }
-                    else { PanelController.shared.hide() }
+            .background(
+                // Header is intrinsically sized — measuring it here is safe
+                // (no flexible children → no proposal-feedback loop).
+                GeometryReader { geo in
+                    Color.clear.preference(key: SettingsHeaderHeightKey.self, value: geo.size.height)
                 }
             )
-        )
+
+            ScrollView {
+                SettingsPanel(
+                    store: store,
+                    hotkey: $hotkey,
+                    diffStyle: diffStyle,
+                    autoHide: $autoHide,
+                    dark: dark
+                )
+                .background(
+                    // Measured INSIDE the ScrollView. ScrollView proposes
+                    // unbounded vertical space to its content, so this size
+                    // is purely intrinsic — never folds back on the outer
+                    // frame. That's what breaks the circular dependency.
+                    GeometryReader { geo in
+                        Color.clear.preference(key: SettingsContentHeightKey.self, value: geo.size.height)
+                    }
+                )
+            }
+            .frame(maxHeight: settingsScrollMax)
+            .background(Palette.footerBg(dark))
+        }
+    }
+
+    /// Single entry point for opening / closing the settings page. Snaps the
+    /// container's height (via settingsOpen) so the panel resizes instantly,
+    /// then animates only the X-offset over 0.28s.
+    private func setSettingsOpen(_ open: Bool) {
+        settingsOpen = open
+        withAnimation(.easeInOut(duration: 0.28)) {
+            slideOffset = open ? -660 : 0
+        }
     }
 
     private var slashQuery: String? {
@@ -519,5 +642,26 @@ private struct CommandKeyMonitor: NSViewRepresentable {
         deinit {
             if let m = monitor { NSEvent.removeMonitor(m) }
         }
+    }
+}
+
+private struct MainPageHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+private struct SettingsHeaderHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+private struct SettingsContentHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }
