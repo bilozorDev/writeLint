@@ -10,10 +10,16 @@ struct DiffView: View {
     let dark: Bool
 
     var body: some View {
-        switch style {
-        case .stacked: StackedDiffView(ops: ops, dark: dark)
-        case .hover:   HoverDiffView(ops: ops, dark: dark)
+        // Allow text selection across the whole diff so users can copy a
+        // partial linted result by hand (the Copy button copies the full
+        // corrected output; selection covers everything in between).
+        Group {
+            switch style {
+            case .stacked: StackedDiffView(ops: ops, dark: dark)
+            case .hover:   HoverDiffView(ops: ops, dark: dark)
+            }
         }
+        .textSelection(.enabled)
     }
 }
 

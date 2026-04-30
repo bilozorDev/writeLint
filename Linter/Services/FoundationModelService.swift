@@ -167,10 +167,14 @@ final class FoundationModelService {
         return out
     }
 
-    /// Heuristic check that catches the two most common hallucination modes
+    /// Heuristic check that catches the most common hallucination modes
     /// observed in production:
     ///   1. Parenthetical expansion (e.g. "SOP" → "SOP (Standard Operating Procedures)").
     ///   2. Significant word-count expansion (model invented connecting phrases).
+    ///   3. Schema/instruction leakage: the on-device model occasionally
+    ///      regurgitates fragments of its own response-format directive
+    ///      (e.g. trailing "response format in json.") inside the polished
+    ///      string. Reject any output that introduces those phrases.
     static func looksHallucinated(input: String, output: String) -> Bool {
         // 1. Parens in output that weren't in input.
         if output.contains("(") && !input.contains("(") { return true }
@@ -182,6 +186,29 @@ final class FoundationModelService {
         let outputWords = output.split(whereSeparator: { $0.isWhitespace }).count
         if inputWords >= 5, Double(outputWords) > Double(inputWords) * 1.3 {
             return true
+        }
+
+        // 3. Schema/instruction leakage. These are phrases the user almost
+        //    never types but the model emits when it fails to stay inside the
+        //    `polished` field. Only trip if the phrase is in the output AND
+        //    not in the input (so a user actually writing "in JSON" passes).
+        let lowerOut = output.lowercased()
+        let lowerIn = input.lowercased()
+        // Excludes phrases that can appear naturally in user prose (e.g.
+        // "no preamble" — "the doctor began without preamble"). Each entry
+        // here should be something the user is overwhelmingly unlikely to
+        // type but the model emits when it leaks its own directives.
+        let leakedPhrases = [
+            "response format",
+            "in json",
+            "json format",
+            "polished:",
+            "polished text:",
+        ]
+        for phrase in leakedPhrases {
+            if lowerOut.contains(phrase), !lowerIn.contains(phrase) {
+                return true
+            }
         }
         return false
     }

@@ -26,11 +26,13 @@ struct InputRow: View {
             .padding(.top, 16)
 
             // Native multi-line TextField — auto-grows up to ~10 lines.
-            // Plain ⏎ inserts a newline (built-in for axis: .vertical).
-            // ⌘+⏎ is intercepted at the window level by CommandKeyMonitor in
-            // LinterWindow and dispatched to onSubmit — keeps the input free of
-            // any custom NSTextView wrapping (which fought the panel's
-            // auto-resize and triggered Writing Tools affordance windows).
+            // ⌘+⏎ submits and plain ⏎ inserts a newline; both are routed
+            // through CommandKeyMonitor in LinterWindow (SwiftUI's vertical
+            // TextField select-alls on plain ⏎ on macOS, so the monitor
+            // forces a literal newline via insertNewlineIgnoringFieldEditor).
+            // Keeping the input as a TextField rather than a custom NSTextView
+            // avoids fighting the panel's auto-resize and Writing Tools'
+            // affordance windows.
             TextField(
                 "Type or paste text to lint with \(template.name)…",
                 text: $text,
@@ -41,6 +43,10 @@ struct InputRow: View {
             .foregroundStyle(Palette.text(dark))
             .lineLimit(1...10)
             .focused(isFocused)
+            // Disable Apple Writing Tools on this field — its affordance
+            // window kept stealing focus and select-all'ing the text on
+            // Enter (showed up as `WTAffordanceWindow` in the console).
+            .writingToolsBehavior(.disabled)
             .padding(.vertical, 22)
 
             VStack(spacing: 0) {

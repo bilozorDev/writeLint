@@ -30,18 +30,14 @@ struct LinterWindow: View {
     /// currently filtered set). Reset to 0 whenever the slash query changes.
     @State private var slashSelectedIndex: Int = 0
 
-    @State private var mainPageHeight: CGFloat = 0
-    // Settings page height is computed from two intrinsic measurements (header
-    // + content) rather than measured at the page level. Measuring the page
-    // itself created a circular dependency: the ScrollView's rendered height
-    // fed back as the proposal to the same ScrollView, settling at ~150pt.
-    // Header is intrinsically sized; content is measured inside the ScrollView
-    // (where vertical proposal is unbounded, so its size is purely intrinsic).
-    @State private var settingsHeaderHeight: CGFloat = 0
-    @State private var settingsContentHeight: CGFloat = 0
-
-    /// Hard cap on the scrollable area inside settings.
+    /// Hard cap on the scrollable area inside settings — passed to the
+    /// settings page so its ScrollView clamps internally.
     private let settingsScrollMax: CGFloat = 540
+
+    /// Width of each page in the slide layout. Single source of truth for
+    /// `PageSlideLayout(pageWidth:)` and the settings-open `slideOffset`,
+    /// which must stay in lock-step or the inactive page peeks through.
+    private let pageWidth: CGFloat = 660
 
     @FocusState private var inputFocused: Bool
     @Environment(\.colorScheme) private var colorScheme
@@ -56,50 +52,20 @@ struct LinterWindow: View {
     }
 
     var body: some View {
-        // Both pages are always present in the tree, side by side. Only the
-        // group's X-offset animates — no conditional rendering means SwiftUI
-        // never re-measures the heavy SettingsPanel subtree on each frame
-        // (which was the source of the back-button freeze).
-        //
-        // The container's height is clamped to the *active* page's measured
-        // height so the inactive page doesn't pad the panel with empty space.
-        //
-        // Settings height = header (intrinsic) + min(content intrinsic, 540).
-        // We measure SettingsPanel from *inside* the ScrollView, where the
-        // vertical proposal is unbounded, so the measurement is purely a
-        // function of state (template count / editor open) — not of the
-        // proposal feeding back from the outer .frame. Measuring the page
-        // itself looped: ScrollView accepts whatever it's given → reports it
-        // back → page shrinks → ScrollView accepts smaller → settles at ~150.
-        //
-        // Generous fallbacks so the *first* open isn't visibly short while
-        // measurements settle on frame 1.
-        let settingsTotal = settingsHeaderHeight + min(settingsContentHeight, settingsScrollMax)
-        let activeHeight = settingsOpen
-            ? (settingsContentHeight > 0 ? settingsTotal : 540)
-            : (mainPageHeight > 0 ? mainPageHeight : 200)
-
-        HStack(alignment: .top, spacing: 0) {
+        // Both pages are always present in the tree. A custom `PageSlideLayout`
+        // proposes unbounded vertical space to both pages (so each computes
+        // its true intrinsic height — important for the multi-line TextField
+        // on main and the ScrollView/SettingsPanel on settings) and uses the
+        // ACTIVE page's intrinsic height as the layout's own size. The
+        // inactive page is placed off-screen at x=±pageWidth. Only the
+        // layout's .offset is animated — height changes snap so the slide
+        // reads as purely horizontal.
+        PageSlideLayout(settingsActive: settingsOpen, pageWidth: pageWidth) {
             mainPage
-                .frame(width: 660)
-                .background(
-                    GeometryReader { geo in
-                        Color.clear.preference(key: MainPageHeightKey.self, value: geo.size.height)
-                    }
-                )
             settingsPage
-                .frame(width: 660)
         }
-        // Height changes from `activeHeight` are NOT animated — they snap to
-        // the new page's intrinsic height. Only `slideOffset` is animated
-        // (via withAnimation in `setSettingsOpen`). This keeps the visible
-        // motion purely horizontal.
-        .frame(width: 660, height: activeHeight, alignment: .topLeading)
         .offset(x: slideOffset)
         .clipped()
-        .onPreferenceChange(MainPageHeightKey.self)        { mainPageHeight = $0 }
-        .onPreferenceChange(SettingsHeaderHeightKey.self)  { settingsHeaderHeight = $0 }
-        .onPreferenceChange(SettingsContentHeightKey.self) { settingsContentHeight = $0 }
         .background(
             // Brighter than .regularMaterial: thick material gives a more
             // opaque base, plus a translucent white/black tint on top so it
@@ -152,6 +118,7 @@ struct LinterWindow: View {
         }
         .background(
             CommandKeyMonitor(
+                inputFocused: inputFocused,
                 onSubmit: { submit() },
                 onHistory: {
                     setSettingsOpen(false)
@@ -310,13 +277,6 @@ struct LinterWindow: View {
             .overlay(alignment: .bottom) {
                 Rectangle().fill(Palette.divider(dark)).frame(height: 1)
             }
-            .background(
-                // Header is intrinsically sized — measuring it here is safe
-                // (no flexible children → no proposal-feedback loop).
-                GeometryReader { geo in
-                    Color.clear.preference(key: SettingsHeaderHeightKey.self, value: geo.size.height)
-                }
-            )
 
             ScrollView {
                 SettingsPanel(
@@ -325,15 +285,6 @@ struct LinterWindow: View {
                     diffStyle: diffStyle,
                     autoHide: $autoHide,
                     dark: dark
-                )
-                .background(
-                    // Measured INSIDE the ScrollView. ScrollView proposes
-                    // unbounded vertical space to its content, so this size
-                    // is purely intrinsic — never folds back on the outer
-                    // frame. That's what breaks the circular dependency.
-                    GeometryReader { geo in
-                        Color.clear.preference(key: SettingsContentHeightKey.self, value: geo.size.height)
-                    }
                 )
             }
             .frame(maxHeight: settingsScrollMax)
@@ -347,7 +298,7 @@ struct LinterWindow: View {
     private func setSettingsOpen(_ open: Bool) {
         settingsOpen = open
         withAnimation(.easeInOut(duration: 0.28)) {
-            slideOffset = open ? -660 : 0
+            slideOffset = open ? -pageWidth : 0
         }
     }
 
@@ -618,11 +569,14 @@ struct SlashHandler {
     var onEnter: () -> Void
 }
 
-/// Catches ⌘+Return (submit), ⌘1..9 (template switch), Esc, and slash-menu
-/// nav at the window level — runs BEFORE the focused TextField sees the
-/// keyDown, so plain ⏎ still falls through to the field for newline
-/// insertion (unless the slash menu is open).
+/// Catches ⌘+Return (submit), ⌘1..9 (template switch), Esc, slash-menu nav,
+/// and the main input's plain-⏎ → newline at the window level. The plain-⏎
+/// intercept fires only when the main input is focused — settings fields
+/// (template name TextField, instructions TextEditor) keep their native
+/// behavior because the monitor returns the event unchanged when
+/// `inputFocused` is false.
 private struct CommandKeyMonitor: NSViewRepresentable {
+    var inputFocused: Bool
     var onSubmit: () -> Void
     var onHistory: () -> Void
     var onNumber: (Int) -> Void
@@ -631,6 +585,7 @@ private struct CommandKeyMonitor: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSView {
         let v = MonitorView()
+        v.inputFocused = inputFocused
         v.onSubmit = onSubmit
         v.onHistory = onHistory
         v.onNumber = onNumber
@@ -640,6 +595,7 @@ private struct CommandKeyMonitor: NSViewRepresentable {
     }
     func updateNSView(_ v: NSView, context: Context) {
         guard let v = v as? MonitorView else { return }
+        v.inputFocused = inputFocused
         v.onSubmit = onSubmit
         v.onHistory = onHistory
         v.onNumber = onNumber
@@ -647,6 +603,7 @@ private struct CommandKeyMonitor: NSViewRepresentable {
         v.slashHandler = slashHandler
     }
     final class MonitorView: NSView {
+        var inputFocused: Bool = false
         var onSubmit: (() -> Void)?
         var onHistory: (() -> Void)?
         var onNumber: ((Int) -> Void)?
@@ -681,6 +638,26 @@ private struct CommandKeyMonitor: NSViewRepresentable {
                         self.onSubmit?()
                         return nil
                     }
+                    // Plain ⏎ in the main input → insert newline at the cursor.
+                    // SwiftUI TextField(axis: .vertical) on macOS treats plain
+                    // Enter as "submit", which manifests as a select-all of the
+                    // current value instead of a newline. We force the
+                    // newline via the field editor so cursor position is
+                    // preserved. Gated on `inputFocused` so the settings
+                    // panel's TextEditor / TextField keep native behavior, and
+                    // on `event.window === self.window` so we never inject
+                    // newlines into another window's field editor if the app
+                    // ever gains a second window (sheet, secondary panel).
+                    if (event.keyCode == 36 || event.keyCode == 76),
+                       self.inputFocused,
+                       event.modifierFlags
+                        .intersection([.command, .shift, .option, .control])
+                        .isEmpty,
+                       let win = event.window, win === self.window,
+                       let editor = win.firstResponder as? NSTextView {
+                        editor.insertNewlineIgnoringFieldEditor(nil)
+                        return nil
+                    }
                     if event.keyCode == 53 /* esc */ {
                         self.onEscape?(); return nil
                     }
@@ -712,23 +689,35 @@ private struct CommandKeyMonitor: NSViewRepresentable {
     }
 }
 
-private struct MainPageHeightKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
-    }
-}
+/// Two-page side-by-side layout for the slide transition.
+///
+/// Both pages are always laid out (no conditional rendering, no rebuild
+/// during animation). Each gets an unbounded vertical proposal so the
+/// TextField axis-vertical and the SettingsPanel ScrollView can compute
+/// their true intrinsic heights. The layout's own size is taken from the
+/// active page only, so the panel resizes to whichever page is current.
+private struct PageSlideLayout: Layout {
+    var settingsActive: Bool
+    var pageWidth: CGFloat
 
-private struct SettingsHeaderHeightKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let unbounded = ProposedViewSize(width: pageWidth, height: nil)
+        let activeIdx = settingsActive ? 1 : 0
+        guard subviews.indices.contains(activeIdx) else {
+            return CGSize(width: pageWidth, height: 0)
+        }
+        let size = subviews[activeIdx].sizeThatFits(unbounded)
+        return CGSize(width: pageWidth, height: size.height)
     }
-}
 
-private struct SettingsContentHeightKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let unbounded = ProposedViewSize(width: pageWidth, height: nil)
+        for (idx, sv) in subviews.enumerated() {
+            let xOffset: CGFloat = (idx == 0) ? 0 : pageWidth
+            sv.place(
+                at: CGPoint(x: bounds.minX + xOffset, y: bounds.minY),
+                proposal: unbounded
+            )
+        }
     }
 }
