@@ -79,12 +79,14 @@ struct KeyCaptureView: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
         let v = CaptureNSView()
         v.onCapture = onCapture
+        v.isActive = active
         return v
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
         guard let v = nsView as? CaptureNSView else { return }
         v.onCapture = onCapture
+        v.isActive = active
         if active {
             DispatchQueue.main.async {
                 v.window?.makeFirstResponder(v)
@@ -96,13 +98,22 @@ struct KeyCaptureView: NSViewRepresentable {
 
     final class CaptureNSView: NSView {
         var onCapture: ((Hotkey) -> Void)?
-        override var acceptsFirstResponder: Bool { true }
+        /// Only capture key events while actively recording. Without this gate
+        /// `performKeyEquivalent` would swallow every ⌘-chord in the window
+        /// (⌘C/⌘V in a TextField, etc.) — even when the recorder isn't open.
+        var isActive: Bool = false
+
+        override var acceptsFirstResponder: Bool { isActive }
+
         override func keyDown(with event: NSEvent) {
+            guard isActive else { super.keyDown(with: event); return }
             if let hk = Hotkey.fromNSEvent(event) {
                 onCapture?(hk)
             }
         }
+
         override func performKeyEquivalent(with event: NSEvent) -> Bool {
+            guard isActive else { return super.performKeyEquivalent(with: event) }
             if let hk = Hotkey.fromNSEvent(event) {
                 onCapture?(hk)
                 return true

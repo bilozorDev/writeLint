@@ -102,27 +102,58 @@ final class FoundationModelService {
         var isSeparator: Bool
     }
 
-    /// Splits text into paragraph chunks separated by blank lines, preserving
-    /// the exact separator characters so the rebuilt output keeps the user's
-    /// original spacing.
+    /// Splits text into paragraph chunks separated by **blank lines** (two or
+    /// more consecutive newlines). Single line breaks stay inside a chunk so
+    /// the model can see related lines together — necessary for rules like
+    /// "blank line between greeting and body". Separators are preserved
+    /// verbatim so the rebuilt output keeps the user's original spacing.
     private static func splitIntoChunks(_ text: String) -> [Chunk] {
         guard !text.isEmpty else { return [] }
+        let scalars = Array(text)
         var chunks: [Chunk] = []
-        var current = ""
-        var currentIsSep = text.first?.isNewline ?? false
-
-        for ch in text {
-            let isSep = ch.isNewline
-            if isSep == currentIsSep {
-                current.append(ch)
-            } else {
-                chunks.append(Chunk(text: current, isSeparator: currentIsSep))
-                current = String(ch)
-                currentIsSep = isSep
+        var i = 0
+        while i < scalars.count {
+            // Collect a separator run only if it spans at least 2 newlines
+            // (i.e. a blank line). Otherwise treat newlines as part of the
+            // surrounding text chunk.
+            if scalars[i].isNewline {
+                var newlineCount = 0
+                var j = i
+                while j < scalars.count, scalars[j].isNewline {
+                    newlineCount += 1
+                    j += 1
+                }
+                if newlineCount >= 2 {
+                    chunks.append(Chunk(text: String(scalars[i..<j]), isSeparator: true))
+                    i = j
+                    continue
+                }
+                // Single newline — fall through and let it be appended to the
+                // current text chunk below.
             }
-        }
-        if !current.isEmpty {
-            chunks.append(Chunk(text: current, isSeparator: currentIsSep))
+            // Build a text chunk: everything up to (but not including) the
+            // next blank-line run, OR end of input.
+            var j = i
+            while j < scalars.count {
+                if scalars[j].isNewline {
+                    var k = j
+                    var count = 0
+                    while k < scalars.count, scalars[k].isNewline {
+                        count += 1
+                        k += 1
+                    }
+                    if count >= 2 { break } // stop before the blank line
+                    j = k                   // single newline: keep walking
+                } else {
+                    j += 1
+                }
+            }
+            if j > i {
+                chunks.append(Chunk(text: String(scalars[i..<j]), isSeparator: false))
+                i = j
+            } else {
+                i += 1 // safety: avoid infinite loop on degenerate input
+            }
         }
         return chunks
     }

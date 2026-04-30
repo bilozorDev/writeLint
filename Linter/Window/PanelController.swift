@@ -12,6 +12,9 @@ final class PanelController {
 
     /// Set by `LinterWindow` so summon can re-focus the input field.
     var requestFocus: () -> Void = {}
+    /// Set by `LinterWindow` so panel-hide can reset transient state
+    /// (input text, result, settings open, etc.).
+    var onHide: () -> Void = {}
 
     private init() {}
 
@@ -46,6 +49,7 @@ final class PanelController {
 
     func hide() {
         panel?.orderOut(nil)
+        onHide()
     }
 
     private func centerOnActiveScreen() {

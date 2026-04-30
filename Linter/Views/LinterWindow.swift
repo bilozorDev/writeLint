@@ -10,12 +10,14 @@ struct LinterWindow: View {
 
     @State private var text: String = ""
     @State private var settingsOpen = false
+    @State private var historyOpen = false
     @State private var thinking = false
     @State private var result: LintResult?
     @State private var copied = false
     @State private var availability: ModelAvailability = .available
     @State private var lintTask: Task<Void, Never>?
     @State private var toast: String?
+    @State private var history = PromptHistory.shared
 
     @FocusState private var inputFocused: Bool
     @Environment(\.colorScheme) private var colorScheme
@@ -78,7 +80,23 @@ struct LinterWindow: View {
                 InlineErrorBar(message: reason, isInstalling: installing, dark: dark)
             }
 
-            if settingsOpen {
+            if historyOpen {
+                HistoryView(
+                    entries: history.entries,
+                    templates: store.templates,
+                    dark: dark,
+                    onPick: { entry in
+                        text = entry.text
+                        if store.templates.contains(where: { $0.id == entry.templateID }) {
+                            store.selectedID = entry.templateID
+                        }
+                        historyOpen = false
+                        result = nil
+                    },
+                    onClear: { history.clear() },
+                    onClose: { historyOpen = false }
+                )
+            } else if settingsOpen {
                 Divider().background(Palette.divider(dark))
                 ScrollView {
                     SettingsPanel(
@@ -152,16 +170,28 @@ struct LinterWindow: View {
             availability = FoundationModelService.shared.availability
             inputFocused = true
             PanelController.shared.requestFocus = { inputFocused = true }
+            PanelController.shared.onHide = {
+                text = ""
+                result = nil
+                settingsOpen = false
+                historyOpen = false
+                cancelLint()
+            }
         }
         .background(
             CommandKeyMonitor(
                 onSubmit: { submit() },
+                onHistory: {
+                    settingsOpen = false
+                    historyOpen.toggle()
+                },
                 onNumber: { idx in
                     store.selectByIndex(idx)
                     result = nil
                 },
                 onEscape: {
-                    if settingsOpen { settingsOpen = false }
+                    if historyOpen { historyOpen = false }
+                    else if settingsOpen { settingsOpen = false }
                     else if result != nil { result = nil }
                     else { PanelController.shared.hide() }
                 }
@@ -188,6 +218,7 @@ struct LinterWindow: View {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         guard case .available = availability else { return }
         cancelLint()
+        history.record(text: text, templateID: store.selectedID)
         let template = store.selected
         let toLint = text
         thinking = true
@@ -292,6 +323,11 @@ private struct FooterHint: View {
                 KbdLabel(text: "/", dark: dark)
                 Text("Search")
             }
+            HStack(spacing: 5) {
+                KbdLabel(text: "⌘", dark: dark)
+                KbdLabel(text: "H", dark: dark)
+                Text("History")
+            }
             Spacer()
             HStack(spacing: 5) {
                 Image(systemName: "lock.fill").font(.system(size: 10))
@@ -311,12 +347,14 @@ private struct FooterHint: View {
 /// still falls through to the field for newline insertion.
 private struct CommandKeyMonitor: NSViewRepresentable {
     var onSubmit: () -> Void
+    var onHistory: () -> Void
     var onNumber: (Int) -> Void
     var onEscape: () -> Void
 
     func makeNSView(context: Context) -> NSView {
         let v = MonitorView()
         v.onSubmit = onSubmit
+        v.onHistory = onHistory
         v.onNumber = onNumber
         v.onEscape = onEscape
         return v
@@ -324,11 +362,13 @@ private struct CommandKeyMonitor: NSViewRepresentable {
     func updateNSView(_ v: NSView, context: Context) {
         guard let v = v as? MonitorView else { return }
         v.onSubmit = onSubmit
+        v.onHistory = onHistory
         v.onNumber = onNumber
         v.onEscape = onEscape
     }
     final class MonitorView: NSView {
         var onSubmit: (() -> Void)?
+        var onHistory: (() -> Void)?
         var onNumber: ((Int) -> Void)?
         var onEscape: (() -> Void)?
         private var monitor: Any?
@@ -351,6 +391,14 @@ private struct CommandKeyMonitor: NSViewRepresentable {
                     }
                     if event.keyCode == 53 /* esc */ {
                         self.onEscape?(); return nil
+                    }
+                    // ⌘+H → toggle history
+                    if event.keyCode == 4 /* H */,
+                       event.modifierFlags.contains(.command),
+                       !event.modifierFlags.contains(.shift),
+                       !event.modifierFlags.contains(.option),
+                       !event.modifierFlags.contains(.control) {
+                        self.onHistory?(); return nil
                     }
                     if event.modifierFlags.contains(.command),
                        let chars = event.charactersIgnoringModifiers,
