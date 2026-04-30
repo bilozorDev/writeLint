@@ -19,6 +19,11 @@ final class PromptHistory {
     }
 
     private init() {
+        // Forward-compat note: prior builds stored a `templateID` field per
+        // entry. JSONDecoder ignores unknown keys by default, so old data
+        // decodes cleanly into the slimmed-down `PromptEntry`; the field is
+        // dropped silently on the next `persist()`. No explicit migration
+        // step needed.
         if let data = UserDefaults.standard.data(forKey: Self.key),
            let decoded = try? JSONDecoder().decode([PromptEntry].self, from: data) {
             // One-time migration: strip surrounding whitespace from any

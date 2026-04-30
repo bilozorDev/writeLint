@@ -79,17 +79,20 @@ final class PromptStore {
     """
 
     init() {
-        let stored = UserDefaults.standard.string(forKey: Self.instructionsKey)
-        // One-time scrub: reject any stored prompt that still contains the
-        // deprecated "Hey, Katie" example (the on-device model parrots it
-        // into responses). After one launch the canonical doesn't include
-        // the phrase, so this is idempotent.
-        if let stored, !stored.isEmpty, !stored.contains("Hey, Katie") {
+        let defaults = UserDefaults.standard
+        let stored = defaults.string(forKey: Self.instructionsKey)
+        if let stored, !stored.isEmpty {
             self.instructions = stored
         } else {
             self.instructions = Self.defaultInstructions
         }
-        self.advancedMode = UserDefaults.standard.bool(forKey: Self.advancedModeKey)
+        self.advancedMode = defaults.bool(forKey: Self.advancedModeKey)
+
+        // One-time cleanup of orphaned keys from the multi-template build.
+        // No-op once removed — `removeObject` on a missing key is harmless,
+        // so we don't need a "did-clean-up" flag.
+        defaults.removeObject(forKey: "templates.v1")
+        defaults.removeObject(forKey: "selectedTemplateID.v1")
     }
 
     /// Restore the factory grammar prompt. The Settings UI confirms before
