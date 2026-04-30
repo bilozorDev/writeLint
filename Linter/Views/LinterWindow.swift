@@ -117,22 +117,35 @@ struct LinterWindow: View {
                 if thinking {
                     ThinkingBar(dark: dark)
                 } else if let r = result {
-                    Divider().background(Palette.divider(dark))
-                    ScrollView {
-                        DiffView(ops: r.ops, style: diffStyle.wrappedValue, dark: dark)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                    if r.stats.added == 0 && r.stats.removed == 0 {
+                        // No changes — skip the full diff and show a small
+                        // confirmation bar instead. The user can copy or
+                        // dismiss themselves (Esc / click-away); we never
+                        // auto-close because there's nothing to "accept".
+                        CleanBar(
+                            latencyMs: r.latencyMs,
+                            copied: copied,
+                            dark: dark,
+                            onCopy: handleCopy
+                        )
+                    } else {
+                        Divider().background(Palette.divider(dark))
+                        ScrollView {
+                            DiffView(ops: r.ops, style: diffStyle.wrappedValue, dark: dark)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .frame(maxHeight: 360)
+                        .background(Palette.footerBg(dark))
+                        ResultActions(
+                            stats: r.stats,
+                            latencyMs: r.latencyMs,
+                            copied: copied,
+                            dark: dark,
+                            onCopy: handleCopy,
+                            onReject: { result = nil },
+                            onAccept: handleAccept
+                        )
                     }
-                    .frame(maxHeight: 360)
-                    .background(Palette.footerBg(dark))
-                    ResultActions(
-                        stats: r.stats,
-                        latencyMs: r.latencyMs,
-                        copied: copied,
-                        dark: dark,
-                        onCopy: handleCopy,
-                        onReject: { result = nil },
-                        onAccept: handleAccept
-                    )
                 } else if !settingsOpen {
                     FooterHint(dark: dark, hotkey: hotkey)
                 }
@@ -233,8 +246,8 @@ struct LinterWindow: View {
                 let r = try await FoundationModelService.shared.lint(text: toLint, template: template)
                 if Task.isCancelled { return }
                 await MainActor.run {
-                    self.result = r
                     self.thinking = false
+                    self.result = r
                 }
             } catch is CancellationError {
                 return
@@ -301,6 +314,70 @@ struct LinterWindow: View {
         pb.setString(r.output, forType: .string)
         copied = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
+    }
+}
+
+/// Compact "no changes needed" bar shown in place of the diff view when the
+/// model returns the input unchanged. Stays visible until the user dismisses
+/// (Esc / click-away) — no Accept/Reject because there's nothing to commit.
+/// Includes a Copy button so the user can still grab the (already-clean) text.
+private struct CleanBar: View {
+    let latencyMs: Int
+    let copied: Bool
+    let dark: Bool
+    let onCopy: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            ZStack {
+                Circle()
+                    .fill(Palette.added.opacity(dark ? 0.22 : 0.16))
+                    .frame(width: 22, height: 22)
+                Image(systemName: "checkmark")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(Palette.added)
+            }
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Text is already clean")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Palette.text(dark))
+                Text("Nothing to change.")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(Palette.sub(dark))
+            }
+            Spacer()
+            HStack(spacing: 10) {
+                Text("\(latencyMs)ms")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Palette.sub(dark))
+                HStack(spacing: 3) {
+                    Image(systemName: "apple.logo").font(.system(size: 10))
+                    Text("on-device").font(.system(size: 11))
+                }
+                .foregroundStyle(Palette.sub(dark))
+            }
+            Button(action: onCopy) {
+                HStack(spacing: 5) {
+                    Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                        .font(.system(size: 11, weight: .medium))
+                    Text(copied ? "Copied" : "Copy")
+                        .font(.system(size: 12, weight: .medium))
+                }
+                .foregroundStyle(copied ? Palette.added : Palette.text(dark))
+                .padding(.horizontal, 12).padding(.vertical, 5)
+                .background(
+                    RoundedRectangle(cornerRadius: 7)
+                        .fill(Palette.surface(dark))
+                        .overlay(RoundedRectangle(cornerRadius: 7).stroke(Palette.divider(dark), lineWidth: 0.5))
+                )
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 14).padding(.vertical, 12)
+        .background(Palette.footerBg(dark))
+        .overlay(alignment: .top) {
+            Rectangle().fill(Palette.divider(dark)).frame(height: 1)
+        }
     }
 }
 
