@@ -86,7 +86,12 @@ struct LintIntegrationTests {
         // an output that is empty / equal to input. What we MUST NOT see is
         // a hallucinated partial-model-output silently surfacing — that would
         // mean cancellation didn't actually short-circuit the pipeline.
-        let longInput = String(repeating: "this sentence has a typo definately. ", count: 8)
+        //
+        // Sizing: 30 repeats of a 7-word sentence is a ~210-word input that
+        // chunks into a single paragraph and takes ~1–3 s on a warm device.
+        // The 60 ms cancel delay reliably fires while the model is still
+        // generating — way past the lint's setup phase, well before completion.
+        let longInput = String(repeating: "this sentence has a typo definately. ", count: 30)
         let task = Task {
             try await FoundationModelService.shared.lint(
                 text: longInput,
@@ -94,7 +99,7 @@ struct LintIntegrationTests {
             )
         }
         Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 10_000_000)
+            try? await Task.sleep(nanoseconds: 60_000_000)
             task.cancel()
         }
         do {
@@ -109,7 +114,10 @@ struct LintIntegrationTests {
             #expect(preserved || guarded,
                     "cancellation produced partial model output instead of preserving input: \(result.output.debugDescription)")
         } catch is CancellationError {
-            // Cancellation propagated — the cleanest possible outcome.
+            // Cancellation propagated — the cleanest possible outcome. Assert
+            // the task itself is marked cancelled, which the regression we
+            // care about (cancel call lost in transit) would expose.
+            #expect(task.isCancelled, "task threw CancellationError but isCancelled is false")
         } catch {
             // Other framework errors during teardown are tolerated; the test
             // is specifically about not silently surfacing partial output,

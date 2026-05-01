@@ -96,6 +96,31 @@ enum LintIssue: Equatable {
             return "The on-device model returned malformed output, so we kept your original."
         }
     }
+
+    /// Priority for surfacing one issue when multiple chunks fall back.
+    /// Hallucinations rank highest because they're the most user-actionable
+    /// (almost always a prompt-tunable problem), then framework generation
+    /// errors (sometimes user-actionable: shorten, change wording), and
+    /// finally malformed output, which is rarely something the user can fix.
+    /// Used by `LintIssue.upgrade(_:with:)` to keep the highest-priority
+    /// issue when a later chunk fires a more-actionable guard than an
+    /// earlier one.
+    var priority: Int {
+        switch self {
+        case .hallucinated:     return 2
+        case .generationError:  return 1
+        case .malformedOutput:  return 0
+        }
+    }
+
+    /// Combines two issues using priority — picks the higher-priority one.
+    /// `existing == nil` always loses to `incoming`. When priorities tie,
+    /// keep `existing` (the earlier-fired issue) so we don't churn between
+    /// equally-actionable issues across the loop.
+    static func upgrade(_ existing: LintIssue?, with incoming: LintIssue) -> LintIssue {
+        guard let existing else { return incoming }
+        return incoming.priority > existing.priority ? incoming : existing
+    }
 }
 
 /// Guided-generation schema. Forces the model to emit a single string field
@@ -142,6 +167,11 @@ final class FoundationModelService {
     /// `true` for `GenerationError` cases where the right UX is to silently
     /// return the user's original text instead of surfacing an error toast.
     /// All three cases here are model-side conditions the user can't act on.
+    ///
+    /// Not unit-tested: constructing `LanguageModelSession.GenerationError`
+    /// instances in tests is brittle (the cases have framework-private inits),
+    /// and the body is an exhaustive switch — a regression would show up as
+    /// a compile error or be caught by the integration tests in Layer 3.
     private static func isPassThroughableError(_ error: LanguageModelSession.GenerationError) -> Bool {
         switch error {
         case .guardrailViolation, .unsupportedLanguageOrLocale, .exceededContextWindowSize:
@@ -154,7 +184,10 @@ final class FoundationModelService {
     /// Friendly rendering of a pass-throughable `GenerationError` for the
     /// in-panel warning bar. Kept narrow — these are the only three cases
     /// `isPassThroughableError` accepts; everything else propagates as a
-    /// toast and never reaches here.
+    /// toast and never reaches here. If a future contributor adds a fourth
+    /// pass-throughable case to `isPassThroughableError` without adding a
+    /// matching arm here, the assertion makes it loud in dev (Release falls
+    /// back to a generic message rather than crashing the user).
     private static func friendlyGenerationErrorMessage(_ error: LanguageModelSession.GenerationError) -> String {
         switch error {
         case .guardrailViolation:
@@ -164,6 +197,7 @@ final class FoundationModelService {
         case .exceededContextWindowSize:
             return "This text is too long for the on-device model. Try a shorter passage."
         default:
+            assertionFailure("isPassThroughableError accepted a case friendlyGenerationErrorMessage doesn't render: \(error)")
             return "The on-device model couldn't process this input."
         }
     }
@@ -195,11 +229,12 @@ final class FoundationModelService {
 
         do {
             var output = ""
-            // First fallback we encountered, if any. Surfaced in `LintResult`
-            // so the UI can distinguish a clean run from "every chunk fell
-            // back". We only keep the first because the warning bar shows one
-            // headline; per-chunk detail is in the log.
-            var firstIssue: LintIssue?
+            // Highest-priority fallback we've seen so far across the loop.
+            // Surfaced in `LintResult` so the UI can distinguish a clean run
+            // from "every chunk fell back". The warning bar shows one headline
+            // (per-chunk detail goes to the log), so we keep the most
+            // actionable one — see `LintIssue.upgrade(_:with:)` for priority.
+            var currentIssue: LintIssue?
             for (i, chunk) in chunks.enumerated() {
                 if Task.isCancelled { throw LintError.cancelled }
                 if chunk.isSeparator {
@@ -272,9 +307,7 @@ final class FoundationModelService {
                     if Self.isPassThroughableError(e) {
                         lintLog.notice("chunk \(i): GENERATION ERROR (\(String(describing: e), privacy: .public)) — passing original through")
                         output += chunk.text
-                        if firstIssue == nil {
-                            firstIssue = .generationError(detail: Self.friendlyGenerationErrorMessage(e))
-                        }
+                        currentIssue = LintIssue.upgrade(currentIssue, with: .generationError(detail: Self.friendlyGenerationErrorMessage(e)))
                         continue
                     }
                     throw e
@@ -293,9 +326,7 @@ final class FoundationModelService {
                     if desc.contains("deserialize") || desc.contains("decode") {
                         lintLog.notice("chunk \(i): DESERIALIZE FAILED (\(error.localizedDescription, privacy: .public)) — passing original through")
                         output += chunk.text
-                        if firstIssue == nil {
-                            firstIssue = .malformedOutput
-                        }
+                        currentIssue = LintIssue.upgrade(currentIssue, with: .malformedOutput)
                         continue
                     }
                     throw error
@@ -312,9 +343,7 @@ final class FoundationModelService {
                 if let reason = Self.hallucinationReason(input: chunk.text, output: cleaned) {
                     lintLog.notice("chunk \(i): HALLUCINATED (\(reason.description, privacy: .public)) — falling back to original")
                     output += chunk.text
-                    if firstIssue == nil {
-                        firstIssue = .hallucinated(reason: reason.description)
-                    }
+                    currentIssue = LintIssue.upgrade(currentIssue, with: .hallucinated(reason: reason.description))
                 } else if cleaned == chunk.text.trimmingCharacters(in: .whitespacesAndNewlines) {
                     lintLog.notice("chunk \(i): NO-OP (model returned input verbatim)")
                     output += cleaned
@@ -337,9 +366,9 @@ final class FoundationModelService {
                 Diff.diff(inputCopy, outputCopy)
             }.value
             let stats = Diff.countChanges(ops)
-            let issueTag: String = firstIssue.map { " issue=\(String(describing: $0))" } ?? ""
+            let issueTag: String = currentIssue.map { " issue=\(String(describing: $0))" } ?? ""
             lintLog.notice("─── lint done: latency=\(latencyMs)ms +\(stats.added)/-\(stats.removed) words\(issueTag, privacy: .public), final=\(Self.quoteForLog(output), privacy: .private)")
-            return LintResult(output: output, ops: ops, stats: stats, latencyMs: latencyMs, issue: firstIssue)
+            return LintResult(output: output, ops: ops, stats: stats, latencyMs: latencyMs, issue: currentIssue)
         } catch is CancellationError {
             lintLog.notice("lint cancelled")
             throw LintError.cancelled
@@ -372,6 +401,12 @@ final class FoundationModelService {
     /// a "Hey, Katie" example that ended up prefixing every output). Any
     /// few-shot examples now live inline in the `instructions` string,
     /// where they're visible to the user in Advanced Mode.
+    ///
+    /// Not unit-tested: `Transcript`'s init takes framework-internal
+    /// `Transcript.Entry` cases (`.instructions(...)`, etc.) whose own
+    /// inner-init signatures aren't documented as stable test API. The
+    /// body is also a five-line constructor; the integration tests in
+    /// Layer 3 exercise it indirectly via the real lint() path.
     private static func buildTranscript(instructions: String) -> Transcript {
         Transcript(entries: [
             .instructions(.init(

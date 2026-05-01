@@ -5,6 +5,11 @@ import Foundation
 /// from the original. Used by `DiffTests` to assert the LCS-reconstruction
 /// invariant `apply(diff(a, b), to: a) == b`. Lives in the test target only —
 /// production `Diff.swift` is not changed.
+///
+/// Both `equal` and `delete` ops must align against `original` from the
+/// current cursor forward — that's the LCS contract. If the lookup fails the
+/// LCS produced a bug and we fail loud rather than silently no-op the cursor
+/// (which would hide the regression we're trying to catch).
 func apply(_ ops: [DiffOp], to original: String) -> String {
     var result = ""
     var cursor = original.startIndex
@@ -12,13 +17,15 @@ func apply(_ ops: [DiffOp], to original: String) -> String {
         switch op.kind {
         case .equal:
             result.append(op.text)
-            if let range = original.range(of: op.text, range: cursor..<original.endIndex) {
-                cursor = range.upperBound
+            guard let range = original.range(of: op.text, range: cursor..<original.endIndex) else {
+                preconditionFailure("LCS misalignment: equal op text \(op.text.debugDescription) not found at/after cursor in original \(original.debugDescription)")
             }
+            cursor = range.upperBound
         case .delete:
-            if let range = original.range(of: op.text, range: cursor..<original.endIndex) {
-                cursor = range.upperBound
+            guard let range = original.range(of: op.text, range: cursor..<original.endIndex) else {
+                preconditionFailure("LCS misalignment: delete op text \(op.text.debugDescription) not found at/after cursor in original \(original.debugDescription)")
             }
+            cursor = range.upperBound
         case .insert:
             result.append(op.text)
         }
