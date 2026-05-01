@@ -14,7 +14,16 @@ struct LinterApp: App {
             Button("Quit Write Lint") { NSApp.terminate(nil) }
                 .keyboardShortcut("q")
         } label: {
-            Image(systemName: "sparkles")
+            // Custom logo asset, marked Template Image in Assets.xcassets
+            // so macOS auto-tints it (white in dark mode, black in light,
+            // accent-colored when the menu is open). Explicit frame because
+            // SVG assets render at their intrinsic viewBox size by default,
+            // which for this logo is 640pt — needs to be constrained to the
+            // standard 18pt menu-bar icon size.
+            Image("MenuBarIcon")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 18, height: 18)
         }
         .menuBarExtraStyle(.menu)
     }
