@@ -98,6 +98,9 @@ struct LintIntegrationTests {
                 instructions: Self.defaultPrompt
             )
         }
+        // Detached fire-and-forget canceller. If the lint somehow finished
+        // in <60 ms (much faster than typical), the cancel call lands on an
+        // already-completed task and is a no-op — no leak, nothing to await.
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 60_000_000)
             task.cancel()

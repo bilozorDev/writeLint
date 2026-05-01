@@ -234,6 +234,11 @@ final class FoundationModelService {
             // from "every chunk fell back". The warning bar shows one headline
             // (per-chunk detail goes to the log), so we keep the most
             // actionable one — see `LintIssue.upgrade(_:with:)` for priority.
+            // Reassigned on every fallback (with the same value, when upgrade
+            // keeps the existing issue) — fine because this is a local. If
+            // this ever migrates to a property with a `didSet`, switch to
+            // `if let upgraded = ..., upgraded != currentIssue` to avoid
+            // spurious notifications.
             var currentIssue: LintIssue?
             for (i, chunk) in chunks.enumerated() {
                 if Task.isCancelled { throw LintError.cancelled }

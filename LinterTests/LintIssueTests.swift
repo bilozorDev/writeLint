@@ -42,13 +42,14 @@ struct LintIssueTests {
         )
         #expect(kept == .hallucinated(reason: "added-parens"))
 
-        // Same for generationError vs malformedOutput stays at generationError
-        // (it's higher priority than malformedOutput).
-        let stays = LintIssue.upgrade(
-            .generationError(detail: "first"),
-            with: .malformedOutput
+        // Same shape for two generationErrors with different detail strings
+        // (e.g., guardrail violation in chunk 1, context-window-exceeded in
+        // chunk 4). Equal priority, keep the first one.
+        let keptGenError = LintIssue.upgrade(
+            .generationError(detail: "blocked"),
+            with: .generationError(detail: "too long")
         )
-        #expect(stays == .generationError(detail: "first"))
+        #expect(keptGenError == .generationError(detail: "blocked"))
     }
 
     @Test func priorityOrdering() {
