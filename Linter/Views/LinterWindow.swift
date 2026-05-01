@@ -5,7 +5,6 @@ struct LinterWindow: View {
     @Bindable var store: PromptStore
     @Binding var hotkey: Hotkey
 
-    @AppStorage("diffStyle.v1") private var diffStyleRaw: String = DiffStyle.stacked.rawValue
     @AppStorage("autoHide.v1")  private var autoHide: Bool = true
 
     @State private var text: String = ""
@@ -39,13 +38,6 @@ struct LinterWindow: View {
     @Environment(\.colorScheme) private var colorScheme
 
     private var dark: Bool { colorScheme == .dark }
-
-    private var diffStyle: Binding<DiffStyle> {
-        Binding(
-            get: { DiffStyle(rawValue: diffStyleRaw) ?? .stacked },
-            set: { diffStyleRaw = $0.rawValue }
-        )
-    }
 
     var body: some View {
         // Both pages are always present in the tree. A custom `PageSlideLayout`
@@ -165,7 +157,7 @@ struct LinterWindow: View {
                 } else {
                     Divider().background(Palette.divider(dark))
                     ScrollView {
-                        DiffView(ops: r.ops, style: diffStyle.wrappedValue, dark: dark)
+                        DiffView(ops: r.ops, dark: dark)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .frame(maxHeight: 360)
@@ -228,7 +220,6 @@ struct LinterWindow: View {
                 SettingsPanel(
                     store: store,
                     hotkey: $hotkey,
-                    diffStyle: diffStyle,
                     autoHide: $autoHide,
                     dark: dark
                 )

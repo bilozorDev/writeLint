@@ -3,7 +3,6 @@ import SwiftUI
 struct SettingsPanel: View {
     @Bindable var store: PromptStore
     @Binding var hotkey: Hotkey
-    @Binding var diffStyle: DiffStyle
     @Binding var autoHide: Bool
     let dark: Bool
 
@@ -29,18 +28,6 @@ struct SettingsPanel: View {
                     }
                     Spacer()
                     ShortcutRecorderView(hotkey: $hotkey, dark: dark)
-                }
-                .padding(.horizontal, 4)
-            }
-
-            divider
-
-            // Diff style
-            VStack(alignment: .leading, spacing: 8) {
-                sectionLabel("Diff Style").padding(.leading, 4)
-                HStack(spacing: 6) {
-                    diffTile(.stacked, label: "Stacked", desc: "Original above, corrected below")
-                    diffTile(.hover,   label: "Hover reveal", desc: "Clean text, hover to peek")
                 }
                 .padding(.horizontal, 4)
             }
@@ -171,28 +158,4 @@ struct SettingsPanel: View {
             .foregroundStyle(Palette.sub(dark))
     }
 
-    private func diffTile(_ kind: DiffStyle, label: String, desc: String) -> some View {
-        let active = diffStyle == kind
-        return Button { diffStyle = kind } label: {
-            VStack(alignment: .leading, spacing: 1) {
-                Text(label)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(active ? Palette.accent : Palette.text(dark))
-                Text(desc)
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(Palette.sub(dark))
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 10).padding(.vertical, 8)
-            .background(
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(active ? Palette.accent.opacity(dark ? 0.18 : 0.10) : Palette.surface(dark))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8)
-                            .stroke(active ? Palette.accent : Palette.divider(dark), lineWidth: 1)
-                    )
-            )
-        }
-        .buttonStyle(.plain)
-    }
 }
