@@ -20,7 +20,7 @@ struct SettingsPanel: View {
                         .font(.system(size: 14))
                         .foregroundStyle(Palette.sub(dark))
                     VStack(alignment: .leading, spacing: 1) {
-                        Text("Summon Linter")
+                        Text("Summon Write Lint")
                             .font(.system(size: 13, weight: .medium))
                             .foregroundStyle(Palette.text(dark))
                         Text("Opens with focus, ready to type")

@@ -7,11 +7,11 @@ struct LinterApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            Button("Show Linter  \(HotkeyStore.shared.current.display)") {
+            Button("Show Write Lint  \(HotkeyStore.shared.current.display)") {
                 PanelController.shared.show()
             }
             Divider()
-            Button("Quit Linter") { NSApp.terminate(nil) }
+            Button("Quit Write Lint") { NSApp.terminate(nil) }
                 .keyboardShortcut("q")
         } label: {
             Image(systemName: "sparkles")

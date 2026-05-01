@@ -409,7 +409,7 @@ final class FoundationModelService {
         let raw = String(describing: reason)
         let lower = raw.lowercased()
         if lower.contains("appleintelligence") || lower.contains("apple_intelligence") {
-            return ("Apple Intelligence is off. Enable it in System Settings to use Linter.", false)
+            return ("Apple Intelligence is off. Enable it in System Settings to use Write Lint.", false)
         }
         if lower.contains("notenabled") || lower.contains("disabled") {
             return ("Apple Intelligence isn't enabled on this Mac. Turn it on in System Settings.", false)
