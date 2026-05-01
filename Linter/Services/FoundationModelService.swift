@@ -138,12 +138,22 @@ final class FoundationModelService {
                 //   transduction; sampling adds variance that hurts quality
                 //   on this task per the GEC literature (Loem 2023, Coyne
                 //   2023, Staruch 2025).
-                // - maximumResponseTokens tied to chunk length: free
-                //   anti-hallucination guard at the decoder. Hallucinated
-                //   additions tend to be long; clipping at +50% prevents
-                //   the model from physically writing a fluency rewrite.
-                //   Floor of 64 protects very short chunks.
-                let cap = max(64, (chunk.text.count / 2) + 32)
+                // - maximumResponseTokens tied to chunk length: anti-
+                //   hallucination guard at the decoder. Cap is `chars+256`
+                //   so it accommodates JSON-escape inflation (\n, \"
+                //   etc) plus a token-count buffer beyond the legitimate
+                //   ≤30% growth ceiling the hallucination guard already
+                //   enforces. Floor of 128 protects very short chunks;
+                //   ceiling of 2048 prevents pathological inputs from
+                //   eating the whole 4096-token context window.
+                //
+                // Earlier we used `chars/2 + 32`, which truncated long
+                // outputs mid-string and tripped a deserialize failure
+                // (the guided-generation parser saw an unterminated JSON
+                // value). The looser cap fixes that without giving up
+                // the hallucination protection — that lives in
+                // `hallucinationReason` and runs after generation.
+                let cap = min(2048, max(128, chunk.text.count + 256))
                 let options = GenerationOptions(
                     sampling: .greedy,
                     temperature: 0.0,
@@ -178,6 +188,24 @@ final class FoundationModelService {
                         continue
                     }
                     throw e
+                } catch let error {
+                    // Some Foundation Models failures arrive as a generic
+                    // error rather than a `GenerationError` case — most
+                    // notably "Failed to deserialize a Generable type from
+                    // model output", which fires when the structured output
+                    // is malformed (typically truncation by
+                    // `maximumResponseTokens`). Pass through silently rather
+                    // than throwing — better UX than an error toast for what
+                    // is, from the user's perspective, "the polish didn't
+                    // succeed for this chunk." Logged so we can spot a
+                    // pattern if it ever happens consistently.
+                    let desc = error.localizedDescription.lowercased()
+                    if desc.contains("deserialize") || desc.contains("decode") {
+                        lintLog.notice("chunk \(i): DESERIALIZE FAILED (\(error.localizedDescription, privacy: .public)) — passing original through")
+                        output += chunk.text
+                        continue
+                    }
+                    throw error
                 }
                 let polished = raw.trimmingCharacters(in: .whitespacesAndNewlines)
                 let cleaned = stripWrappingQuotes(polished)
