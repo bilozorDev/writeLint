@@ -14,17 +14,20 @@ final class PromptHistory {
     private static let maxEntries = 10
     static let shared = PromptHistory()
 
+    private let defaults: UserDefaults
+
     var entries: [PromptEntry] {
         didSet { persist() }
     }
 
-    private init() {
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
         // Forward-compat note: prior builds stored a `templateID` field per
         // entry. JSONDecoder ignores unknown keys by default, so old data
         // decodes cleanly into the slimmed-down `PromptEntry`; the field is
         // dropped silently on the next `persist()`. No explicit migration
         // step needed.
-        if let data = UserDefaults.standard.data(forKey: Self.key),
+        if let data = defaults.data(forKey: Self.key),
            let decoded = try? JSONDecoder().decode([PromptEntry].self, from: data) {
             // One-time migration: strip surrounding whitespace from any
             // entries written before `record` started trimming. Self-heals
@@ -68,7 +71,7 @@ final class PromptHistory {
 
     private func persist() {
         if let data = try? JSONEncoder().encode(entries) {
-            UserDefaults.standard.set(data, forKey: Self.key)
+            defaults.set(data, forKey: Self.key)
         }
     }
 }

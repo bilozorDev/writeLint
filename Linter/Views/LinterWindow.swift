@@ -84,6 +84,7 @@ struct LinterWindow: View {
         .shadow(color: .black.opacity(0.18), radius: 18, y: 10)
         .padding(8)
         .padding(28)
+        .accessibilityIdentifier("Linter.PanelRoot")
         .onAppear {
             availability = FoundationModelService.shared.availability
             inputFocused = true
@@ -154,12 +155,25 @@ struct LinterWindow: View {
                 ThinkingBar(dark: dark)
             } else if let r = result {
                 if r.stats.added == 0 && r.stats.removed == 0 {
-                    CleanBar(
-                        latencyMs: r.latencyMs,
-                        copied: copied,
-                        dark: dark,
-                        onCopy: handleCopy
-                    )
+                    if let issue = r.issue {
+                        // Fallback fired (hallucination, generation error,
+                        // malformed output) — output==input is a *failure*,
+                        // not a clean run. Show a warning bar with the reason
+                        // instead of the green "already clean" check.
+                        IssueBar(
+                            issue: issue,
+                            latencyMs: r.latencyMs,
+                            dark: dark,
+                            onDismiss: { result = nil }
+                        )
+                    } else {
+                        CleanBar(
+                            latencyMs: r.latencyMs,
+                            copied: copied,
+                            dark: dark,
+                            onCopy: handleCopy
+                        )
+                    }
                 } else {
                     Divider().background(Palette.divider(dark))
                     ScrollView {
@@ -253,6 +267,15 @@ struct LinterWindow: View {
     private static let maxInputCharacters: Int = 10_000
 
     private func submit() {
+        // If the on-screen result is a *failed* polish (issue set, no diff),
+        // ⌘⏎ must NOT copy-and-close — the "output" is just the user's
+        // original text, and silently shipping it to the clipboard while the
+        // panel disappears feels like a successful polish. Treat ⌘⏎ as
+        // "dismiss the warning" instead, so the user can edit and resubmit.
+        if let r = result, r.issue != nil, r.stats.added == 0, r.stats.removed == 0 {
+            result = nil
+            return
+        }
         // If a result is on screen, ⌘⏎ accepts it (matches the Accept button).
         // Otherwise, kick off a new lint.
         if result != nil {
@@ -406,6 +429,69 @@ private struct CleanBar: View {
                         .fill(Palette.surface(dark))
                         .overlay(RoundedRectangle(cornerRadius: 7).stroke(Palette.divider(dark), lineWidth: 0.5))
                 )
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 14).padding(.vertical, 12)
+        .background(Palette.footerBg(dark))
+        .overlay(alignment: .top) {
+            Rectangle().fill(Palette.divider(dark)).frame(height: 1)
+        }
+    }
+}
+
+/// Warning bar shown when a polish failed and we returned the user's text
+/// untouched. Mirrors `CleanBar`'s structural footprint so the panel resizes
+/// the same way, but uses a warning palette and shows the reason. Esc clears
+/// the bar (same as `CleanBar`); there's no Copy because the displayed text
+/// is identical to what's in the input field above.
+private struct IssueBar: View {
+    let issue: LintIssue
+    let latencyMs: Int
+    let dark: Bool
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            ZStack {
+                Circle()
+                    .fill(Palette.removed.opacity(dark ? 0.22 : 0.16))
+                    .frame(width: 22, height: 22)
+                Image(systemName: "exclamationmark")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(Palette.removed)
+            }
+            VStack(alignment: .leading, spacing: 1) {
+                Text(issue.headline)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Palette.text(dark))
+                Text(issue.detail)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(Palette.sub(dark))
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 8)
+            HStack(spacing: 10) {
+                Text("\(latencyMs)ms")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Palette.sub(dark))
+                HStack(spacing: 3) {
+                    Image(systemName: "apple.logo").font(.system(size: 10))
+                    Text("on-device").font(.system(size: 11))
+                }
+                .foregroundStyle(Palette.sub(dark))
+            }
+            Button(action: onDismiss) {
+                Text("Dismiss")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Palette.text(dark))
+                    .padding(.horizontal, 12).padding(.vertical, 5)
+                    .background(
+                        RoundedRectangle(cornerRadius: 7)
+                            .fill(Palette.surface(dark))
+                            .overlay(RoundedRectangle(cornerRadius: 7).stroke(Palette.divider(dark), lineWidth: 0.5))
+                    )
             }
             .buttonStyle(.plain)
         }

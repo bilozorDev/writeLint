@@ -2,6 +2,16 @@ import AppKit
 import SwiftUI
 import Observation
 
+/// Compute the panel origin so the panel sits Spotlight-style — horizontally
+/// centered on the given screen, slightly above center vertically. Pure
+/// function over its inputs; testable without an NSPanel. Used by
+/// `PanelController.centerOnActiveScreen()`.
+func panelOrigin(for screenFrame: NSRect, panelSize: NSSize) -> NSPoint {
+    let x = screenFrame.midX - panelSize.width / 2
+    let y = screenFrame.midY + panelSize.height * 0.2 - panelSize.height / 2
+    return NSPoint(x: x, y: y)
+}
+
 @MainActor
 @Observable
 final class PanelController {
@@ -98,11 +108,6 @@ final class PanelController {
         let wasAnchoring = panel.anchorsTopEdge
         panel.anchorsTopEdge = false
         defer { panel.anchorsTopEdge = wasAnchoring }
-        let size = panel.frame.size
-        let visible = screen.visibleFrame
-        let x = visible.midX - size.width / 2
-        // Place a bit above center, like Spotlight.
-        let y = visible.midY + size.height * 0.2 - size.height / 2
-        panel.setFrameOrigin(NSPoint(x: x, y: y))
+        panel.setFrameOrigin(panelOrigin(for: screen.visibleFrame, panelSize: panel.frame.size))
     }
 }

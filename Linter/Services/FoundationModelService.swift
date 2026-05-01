@@ -38,6 +38,64 @@ struct LintResult {
     var ops: [DiffOp]
     var stats: (added: Int, removed: Int)
     var latencyMs: Int
+    /// Set when at least one chunk fell back to its original text instead of
+    /// returning a polished version (hallucination guard fired, model errored
+    /// in a pass-throughable way, output was malformed). The UI reads this to
+    /// distinguish a *truly clean* run (no issue, output==input) from a
+    /// *failed* run that happens to look identical because every chunk fell
+    /// back. Holds the first issue encountered — sufficient for the UI's
+    /// "couldn't polish reliably" bar; the per-chunk detail is in the log.
+    var issue: LintIssue?
+}
+
+/// User-visible categorization of a chunk-level fallback. Maps to the warning
+/// bar shown when output equals input only because the polish failed, not
+/// because the text was already clean.
+enum LintIssue: Equatable {
+    /// Hallucination guard tripped (added parens, word-count drift, leaked
+    /// instruction phrase). `reason` is the `HallucinationReason.description`
+    /// so the UI can tailor the detail copy.
+    case hallucinated(reason: String)
+    /// `LanguageModelSession.GenerationError` we chose to swallow (guardrail,
+    /// unsupported language, exceeded context window). `detail` is a friendly
+    /// message for the user.
+    case generationError(detail: String)
+    /// Structured-output parsing failed (typically truncation or malformed
+    /// JSON from the on-device model).
+    case malformedOutput
+
+    /// Headline shown in the warning bar.
+    var headline: String {
+        switch self {
+        case .hallucinated:       return "Couldn't polish reliably"
+        case .generationError:    return "Couldn't polish this text"
+        case .malformedOutput:    return "Couldn't polish this text"
+        }
+    }
+
+    /// Body copy below the headline. Short, actionable when possible.
+    var detail: String {
+        switch self {
+        case .hallucinated(let reason):
+            if reason.hasPrefix("word-expansion") {
+                return "The model wrote new text instead of polishing yours, so we kept your original. If your input is a question, the model may be trying to answer it — try wording it as a statement."
+            }
+            if reason.hasPrefix("word-shrinkage") {
+                return "The model dropped too much content, so we kept your original."
+            }
+            if reason == "added-parens" {
+                return "The model expanded an acronym, so we kept your original."
+            }
+            if reason.hasPrefix("leaked-phrase") {
+                return "The model's output included instruction text, so we kept your original."
+            }
+            return "We kept your original text."
+        case .generationError(let detail):
+            return detail
+        case .malformedOutput:
+            return "The on-device model returned malformed output, so we kept your original."
+        }
+    }
 }
 
 /// Guided-generation schema. Forces the model to emit a single string field
@@ -93,6 +151,23 @@ final class FoundationModelService {
         }
     }
 
+    /// Friendly rendering of a pass-throughable `GenerationError` for the
+    /// in-panel warning bar. Kept narrow — these are the only three cases
+    /// `isPassThroughableError` accepts; everything else propagates as a
+    /// toast and never reaches here.
+    private static func friendlyGenerationErrorMessage(_ error: LanguageModelSession.GenerationError) -> String {
+        switch error {
+        case .guardrailViolation:
+            return "Apple Intelligence's safety filter blocked this input. Try different wording."
+        case .unsupportedLanguageOrLocale:
+            return "The on-device model doesn't support this language yet."
+        case .exceededContextWindowSize:
+            return "This text is too long for the on-device model. Try a shorter passage."
+        default:
+            return "The on-device model couldn't process this input."
+        }
+    }
+
     /// Polish `text` using `instructions` as the entire system prompt sent
     /// to the model. The instructions string is the *only* input that
     /// shapes the model's behavior — no separately-injected few-shot turns,
@@ -120,6 +195,11 @@ final class FoundationModelService {
 
         do {
             var output = ""
+            // First fallback we encountered, if any. Surfaced in `LintResult`
+            // so the UI can distinguish a clean run from "every chunk fell
+            // back". We only keep the first because the warning bar shows one
+            // headline; per-chunk detail is in the log.
+            var firstIssue: LintIssue?
             for (i, chunk) in chunks.enumerated() {
                 if Task.isCancelled { throw LintError.cancelled }
                 if chunk.isSeparator {
@@ -192,6 +272,9 @@ final class FoundationModelService {
                     if Self.isPassThroughableError(e) {
                         lintLog.notice("chunk \(i): GENERATION ERROR (\(String(describing: e), privacy: .public)) — passing original through")
                         output += chunk.text
+                        if firstIssue == nil {
+                            firstIssue = .generationError(detail: Self.friendlyGenerationErrorMessage(e))
+                        }
                         continue
                     }
                     throw e
@@ -210,6 +293,9 @@ final class FoundationModelService {
                     if desc.contains("deserialize") || desc.contains("decode") {
                         lintLog.notice("chunk \(i): DESERIALIZE FAILED (\(error.localizedDescription, privacy: .public)) — passing original through")
                         output += chunk.text
+                        if firstIssue == nil {
+                            firstIssue = .malformedOutput
+                        }
                         continue
                     }
                     throw error
@@ -226,6 +312,9 @@ final class FoundationModelService {
                 if let reason = Self.hallucinationReason(input: chunk.text, output: cleaned) {
                     lintLog.notice("chunk \(i): HALLUCINATED (\(reason.description, privacy: .public)) — falling back to original")
                     output += chunk.text
+                    if firstIssue == nil {
+                        firstIssue = .hallucinated(reason: reason.description)
+                    }
                 } else if cleaned == chunk.text.trimmingCharacters(in: .whitespacesAndNewlines) {
                     lintLog.notice("chunk \(i): NO-OP (model returned input verbatim)")
                     output += cleaned
@@ -248,8 +337,9 @@ final class FoundationModelService {
                 Diff.diff(inputCopy, outputCopy)
             }.value
             let stats = Diff.countChanges(ops)
-            lintLog.notice("─── lint done: latency=\(latencyMs)ms +\(stats.added)/-\(stats.removed) words, final=\(Self.quoteForLog(output), privacy: .private)")
-            return LintResult(output: output, ops: ops, stats: stats, latencyMs: latencyMs)
+            let issueTag: String = firstIssue.map { " issue=\(String(describing: $0))" } ?? ""
+            lintLog.notice("─── lint done: latency=\(latencyMs)ms +\(stats.added)/-\(stats.removed) words\(issueTag, privacy: .public), final=\(Self.quoteForLog(output), privacy: .private)")
+            return LintResult(output: output, ops: ops, stats: stats, latencyMs: latencyMs, issue: firstIssue)
         } catch is CancellationError {
             lintLog.notice("lint cancelled")
             throw LintError.cancelled
@@ -265,7 +355,7 @@ final class FoundationModelService {
     /// Render a string for log output: wrap in quotes, escape literal newlines
     /// to `\n` so a multi-line value stays on one log line and is comparable
     /// to other one-line values.
-    private static func quoteForLog(_ s: String) -> String {
+    static func quoteForLog(_ s: String) -> String {
         let escaped = s
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
@@ -380,7 +470,7 @@ final class FoundationModelService {
         hallucinationReason(input: input, output: output) != nil
     }
 
-    private struct Chunk {
+    struct Chunk: Equatable {
         var text: String
         var isSeparator: Bool
     }
@@ -390,7 +480,7 @@ final class FoundationModelService {
     /// the model can see related lines together — necessary for rules like
     /// "blank line between greeting and body". Separators are preserved
     /// verbatim so the rebuilt output keeps the user's original spacing.
-    private static func splitIntoChunks(_ text: String) -> [Chunk] {
+    static func splitIntoChunks(_ text: String) -> [Chunk] {
         guard !text.isEmpty else { return [] }
         let scalars = Array(text)
         var chunks: [Chunk] = []

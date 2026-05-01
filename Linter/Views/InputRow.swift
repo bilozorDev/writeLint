@@ -47,6 +47,7 @@ struct InputRow: View {
             // Enter (showed up as `WTAffordanceWindow` in the console).
             .writingToolsBehavior(.disabled)
             .padding(.vertical, 22)
+            .accessibilityIdentifier("Linter.InputField")
 
             Button(action: onToggleSettings) {
                 Image(systemName: "gear")
@@ -61,6 +62,7 @@ struct InputRow: View {
             .buttonStyle(.plain)
             .padding(.top, 16)
             .accessibilityLabel(settingsOpen ? "Close settings" : "Open settings")
+            .accessibilityIdentifier("Linter.SettingsButton")
         }
         .padding(.horizontal, 18)
         .padding(.bottom, 4)
