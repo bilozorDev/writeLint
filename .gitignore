@@ -1,0 +1,17 @@
+# Claude agent context — local-only, not part of the public source.
+CLAUDE.md
+
+# Xcode
+build/
+DerivedData/
+*.xcuserstate
+*.xcuserdatad/
+xcuserdata/
+*.swp
+
+# macOS
+.DS_Store
+
+# Editor / IDE
+.vscode/
+.idea/
