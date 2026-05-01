@@ -42,8 +42,15 @@ final class FloatingPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 
     override func cancelOperation(_ sender: Any?) {
-        // Esc closes the panel.
-        self.orderOut(nil)
+        // Esc closes the panel. Route through PanelController.hide() rather
+        // than orderOut(nil) directly so the session-stamp + onHide cleanup
+        // runs (cancels in-flight lint, clears text/result/settings state).
+        // Today this is normally masked by CommandKeyMonitor consuming Esc
+        // first, but if the monitor isn't installed yet (first-frame timing)
+        // or focus is in a place the local monitor doesn't catch, AppKit
+        // dispatches Esc here — and we don't want a running lint task or
+        // populated state surviving the close.
+        Task { @MainActor in PanelController.shared.hide() }
     }
 
     /// Keep the top edge and horizontal center stationary across content-size

@@ -3,7 +3,6 @@ import AppKit
 
 struct LinterWindow: View {
     @Bindable var store: PromptStore
-    @Binding var hotkey: Hotkey
 
     @AppStorage("autoHide.v1")  private var autoHide: Bool = true
 
@@ -180,7 +179,7 @@ struct LinterWindow: View {
                     )
                 }
             } else {
-                FooterHint(dark: dark, hotkey: hotkey)
+                FooterHint(dark: dark, hotkey: HotkeyStore.shared.current)
             }
         }
     }
@@ -226,7 +225,6 @@ struct LinterWindow: View {
             ScrollView {
                 SettingsPanel(
                     store: store,
-                    hotkey: $hotkey,
                     autoHide: $autoHide,
                     dark: dark
                 )
@@ -246,6 +244,14 @@ struct LinterWindow: View {
         }
     }
 
+    /// Hard cap on input length. Below this, the whole pipeline runs comfortably.
+    /// Above it, `Diff.diff`'s LCS table allocates `O(n·m)` Ints and crosses into
+    /// multi-GB territory (~3.2 GB at 100k chars), and a single chunk can also
+    /// exceed the on-device model's 4096-token input window. Reject at the
+    /// submit gate rather than silently truncating — running on a clipped
+    /// version would surface mysterious incomplete results.
+    private static let maxInputCharacters: Int = 10_000
+
     private func submit() {
         // If a result is on screen, ⌘⏎ accepts it (matches the Accept button).
         // Otherwise, kick off a new lint.
@@ -254,6 +260,10 @@ struct LinterWindow: View {
             return
         }
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        guard text.count <= Self.maxInputCharacters else {
+            showToast("Text is too long (max \(Self.maxInputCharacters.formatted()) characters).")
+            return
+        }
         guard case .available = availability else { return }
         cancelLint()
         history.record(text: text)

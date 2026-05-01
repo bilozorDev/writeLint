@@ -31,7 +31,6 @@ struct LinterApp: App {
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private var hotkey: Hotkey = HotkeyStore.shared.current
     private var store: PromptStore!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -60,16 +59,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-/// Wraps `LinterWindow` so the @State `hotkey` lives in a stable place. The
-/// store itself is updated by `ShortcutRecorderView` when the user picks a
-/// new chord — the recorder runs Carbon registration first and only writes
-/// back to this @State on success, so the binding always reflects what's
-/// actually registered.
+/// Thin wrapper kept for symmetry with how `MenuBarExtra`'s content is
+/// constructed. The hotkey is read directly from the `@Observable`
+/// `HotkeyStore` singleton everywhere it's needed, so no @State snapshot
+/// here — that previously caused two sources of truth (LinterRoot's @State
+/// vs. HotkeyStore.shared) that only stayed in sync because writes went
+/// through ShortcutRecorderView.
 struct LinterRoot: View {
     @Bindable var store: PromptStore
-    @State private var hotkey: Hotkey = HotkeyStore.shared.current
 
     var body: some View {
-        LinterWindow(store: store, hotkey: $hotkey)
+        LinterWindow(store: store)
     }
 }

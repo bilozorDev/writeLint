@@ -52,6 +52,7 @@ struct HistoryView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Close history")
             }
             .padding(.horizontal, 12).padding(.top, 10).padding(.bottom, 8)
 

@@ -33,6 +33,13 @@ enum Diff {
     }
 
     static func diff(_ original: String, _ corrected: String) -> [DiffOp] {
+        // Common case: model returned the input unchanged (every passthrough,
+        // every NO-OP chunk, every hallucination-fallback). Skip the O(n·m)
+        // LCS table — at 100k chars it allocates ~3 GB of Ints to discover
+        // what we already know.
+        if original == corrected {
+            return original.isEmpty ? [] : [DiffOp(kind: .equal, text: original)]
+        }
         let a = tokenize(original)
         let b = tokenize(corrected)
         let n = a.count, m = b.count

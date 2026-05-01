@@ -234,7 +234,15 @@ final class FoundationModelService {
             let elapsed = clock.now - start
             let latencyMs = Int(Double(elapsed.components.seconds) * 1000.0
                 + Double(elapsed.components.attoseconds) / 1e15)
-            let ops = Diff.diff(text, output)
+            // `Diff.diff` is the longest pure-CPU step in the pipeline (LCS is
+            // O(n·m) over whitespace-aware tokens). Pure functional — safe to
+            // run off the main actor so we don't block UI updates while the
+            // diff computes.
+            let inputCopy = text
+            let outputCopy = output
+            let ops = await Task.detached(priority: .userInitiated) {
+                Diff.diff(inputCopy, outputCopy)
+            }.value
             let stats = Diff.countChanges(ops)
             lintLog.notice("─── lint done: latency=\(latencyMs)ms +\(stats.added)/-\(stats.removed) words, final=\(Self.quoteForLog(output), privacy: .private)")
             return LintResult(output: output, ops: ops, stats: stats, latencyMs: latencyMs)

@@ -2,7 +2,6 @@ import SwiftUI
 
 struct SettingsPanel: View {
     @Bindable var store: PromptStore
-    @Binding var hotkey: Hotkey
     @Binding var autoHide: Bool
     let dark: Bool
 
@@ -27,7 +26,7 @@ struct SettingsPanel: View {
                             .foregroundStyle(Palette.sub(dark))
                     }
                     Spacer()
-                    ShortcutRecorderView(hotkey: $hotkey, dark: dark)
+                    ShortcutRecorderView(dark: dark)
                 }
                 .padding(.horizontal, 4)
             }

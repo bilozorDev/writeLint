@@ -60,6 +60,7 @@ struct InputRow: View {
             }
             .buttonStyle(.plain)
             .padding(.top, 16)
+            .accessibilityLabel(settingsOpen ? "Close settings" : "Open settings")
         }
         .padding(.horizontal, 18)
         .padding(.bottom, 4)

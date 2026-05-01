@@ -2,7 +2,6 @@ import SwiftUI
 import AppKit
 
 struct ShortcutRecorderView: View {
-    @Binding var hotkey: Hotkey
     let dark: Bool
     @State private var recording = false
     @State private var error: String?
@@ -17,7 +16,10 @@ struct ShortcutRecorderView: View {
                             .font(.system(size: 12, weight: .semibold))
                             .foregroundStyle(Palette.accent)
                     } else {
-                        Text(hotkey.display)
+                        // Read straight from the @Observable HotkeyStore so
+                        // the displayed chord always matches what's actually
+                        // registered, even if some other code path changes it.
+                        Text(HotkeyStore.shared.current.display)
                             .font(.system(size: 14, weight: .medium))
                             .tracking(1)
                             .foregroundStyle(Palette.text(dark))
@@ -41,13 +43,12 @@ struct ShortcutRecorderView: View {
                     // Stay in recording mode so the user can try again.
                     return
                 }
-                // Try to register globally BEFORE committing the binding —
-                // otherwise we'd update the displayed chord and silently leave
-                // the user without a working shortcut. On failure HotkeyStore
-                // rolls back to the previous chord and we surface an inline
-                // error so the user can pick another.
+                // Try to register globally BEFORE committing. On failure
+                // HotkeyStore rolls back to the previous chord and we surface
+                // an inline error so the user can pick another. On success,
+                // observers of HotkeyStore.current (the displayed chord and
+                // the FooterHint) re-render automatically.
                 if HotkeyStore.shared.set(hk) {
-                    hotkey = hk
                     error = nil
                     recording = false
                 } else {
