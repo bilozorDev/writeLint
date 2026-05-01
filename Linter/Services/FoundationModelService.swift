@@ -4,12 +4,12 @@ import os
 
 /// Lint pipeline tracing. Writes through Apple's unified logging — visible in
 /// Xcode's console while running, and in Console.app filtering for subsystem
-/// "Hexaget.Linter" / category "lint" while the app runs standalone.
+/// "com.bilozor.WriteLint" / category "lint" while the app runs standalone.
 /// Inputs/outputs are marked `.public` so they actually appear in the logs
 /// (Logger redacts dynamic strings to `<private>` by default). User text is
 /// not sensitive in this app — the whole point is to see exactly what the
 /// model received and emitted.
-private let lintLog = Logger(subsystem: "Hexaget.Linter", category: "lint")
+private let lintLog = Logger(subsystem: "com.bilozor.WriteLint", category: "lint")
 
 enum LintError: Error, LocalizedError {
     case modelUnavailable(String)
