@@ -46,12 +46,6 @@ Then ⌘R in Xcode. The app installs as a menu-bar item (sparkle icon). There is
 
 All polishing happens on-device through Apple Intelligence. Your text never leaves the Mac. The prompt and recent history are stored in macOS `UserDefaults` (plain text, per-user, local).
 
-## Architecture
-
-Single SwiftUI + AppKit target. The model pipeline lives in [`Linter/Services/FoundationModelService.swift`](Linter/Services/FoundationModelService.swift); UI in [`Linter/Views/`](Linter/Views/). The complete prompt sent to the model is the user-editable string in [`PromptStore.defaultInstructions`](Linter/Models/PromptStore.swift) — nothing else shapes the model's behavior at request time.
-
-For a deeper tour, see [CLAUDE.md](CLAUDE.md).
-
 ## License
 
 [MIT](LICENSE) © 2026 Alex Bilozor
