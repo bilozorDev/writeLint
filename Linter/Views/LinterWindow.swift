@@ -130,8 +130,6 @@ struct LinterWindow: View {
             InputRow(
                 text: $text,
                 dark: dark,
-                thinking: thinking,
-                hasResult: result != nil,
                 settingsOpen: settingsOpen,
                 isFocused: $inputFocused,
                 onSubmit: submit,

@@ -3,8 +3,6 @@ import SwiftUI
 struct InputRow: View {
     @Binding var text: String
     let dark: Bool
-    let thinking: Bool
-    let hasResult: Bool
     let settingsOpen: Bool
     let isFocused: FocusState<Bool>.Binding
     let onSubmit: () -> Void
@@ -49,16 +47,6 @@ struct InputRow: View {
             // Enter (showed up as `WTAffordanceWindow` in the console).
             .writingToolsBehavior(.disabled)
             .padding(.vertical, 22)
-
-            VStack(spacing: 0) {
-                Spacer().frame(height: 18)
-                if !thinking, !text.isEmpty, !hasResult {
-                    HStack(spacing: 3) {
-                        KbdLabel(text: "⌘", dark: dark)
-                        KbdLabel(text: "↩", dark: dark)
-                    }
-                }
-            }
 
             Button(action: onToggleSettings) {
                 Image(systemName: "gear")
