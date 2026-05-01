@@ -89,6 +89,13 @@ struct LinterWindow: View {
             availability = FoundationModelService.shared.availability
             inputFocused = true
             PanelController.shared.requestFocus = { inputFocused = true }
+            PanelController.shared.onShow = {
+                // Re-read availability on every summon. Apple Intelligence
+                // can flip from .unavailable → .available between launch and
+                // first summon (e.g. background download finishes), and
+                // without this the InlineErrorBar would persist forever.
+                availability = FoundationModelService.shared.availability
+            }
             PanelController.shared.onHide = {
                 text = ""
                 result = nil
@@ -307,10 +314,15 @@ struct LinterWindow: View {
             // version, then dismiss after the toast briefly shows. One timer
             // does both — clears the toast and hides the panel — so there's
             // no order-of-execution ambiguity between two competing timers.
+            // Capture sessionStamp so the deferred body no-ops if the user
+            // re-summoned during the toast window — otherwise we'd wipe a
+            // freshly-opened session's state.
             text = r.output
             result = nil
             toast = "Copied to clipboard"
+            let stamp = PanelController.shared.sessionStamp
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.85) {
+                guard PanelController.shared.sessionStamp == stamp else { return }
                 toast = nil
                 PanelController.shared.hide()
             }
@@ -437,6 +449,8 @@ private struct FooterHint: View {
             }
             Spacer()
             HStack(spacing: 5) {
+                Text("AI makes mistakes, always check results")
+                Text("·")
                 Image(systemName: "lock.fill").font(.system(size: 10))
                 Text("Private · on-device")
             }

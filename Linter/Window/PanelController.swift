@@ -8,19 +8,29 @@ final class PanelController {
     static let shared = PanelController()
 
     private var panel: FloatingPanel?
-    private let panelWidth: CGFloat = 580
+    /// Seed width for the panel's content rect. SwiftUI's
+    /// `.preferredContentSize` overrides this once the hosting controller lays
+    /// out, but a seed close to the final width avoids a visible 1-frame
+    /// resize on first show. Must stay in lock-step with `LinterWindow.pageWidth`.
+    private let panelWidth: CGFloat = 660
 
     /// Set by `LinterWindow` so summon can re-focus the input field.
     var requestFocus: () -> Void = {}
     /// Set by `LinterWindow` so panel-hide can reset transient state
     /// (input text, result, settings open, etc.).
     var onHide: () -> Void = {}
+    /// Set by `LinterWindow` so summon can re-read state that may have
+    /// changed while the panel was hidden (e.g. Apple Intelligence
+    /// availability flipping from .unavailable to .available).
+    var onShow: () -> Void = {}
 
     /// Stamp incremented on every `show()`. The deferred onHide closure
     /// captures the value at hide-time and only clears state if no new
     /// session has started since — guards against the user re-summoning
-    /// faster than the runloop turn that fires onHide.
-    private var sessionStamp: Int = 0
+    /// faster than the runloop turn that fires onHide. Read by views that
+    /// schedule deferred work tied to a session (e.g. autoHide-after-accept)
+    /// so the work no-ops if a fresh session has begun.
+    private(set) var sessionStamp: Int = 0
 
     private init() {}
 
@@ -48,6 +58,7 @@ final class PanelController {
         centerOnActiveScreen()
         NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
+        onShow()
         // Focus on next runloop turn so the SwiftUI view has installed.
         DispatchQueue.main.async { [weak self] in
             self?.requestFocus()

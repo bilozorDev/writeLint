@@ -2,9 +2,10 @@ import AppKit
 import SwiftUI
 
 final class FloatingPanel: NSPanel {
-    /// When true, `setContentSize` keeps the panel's TOP edge fixed instead of its
-    /// bottom-left origin (NSWindow's default), so the input row doesn't jump up
-    /// when the SwiftUI content grows downward (e.g. settings open, result appears).
+    /// When true, `setContentSize` keeps the panel's TOP edge and horizontal
+    /// CENTER fixed instead of its bottom-left origin (NSWindow's default), so
+    /// the visible card stays put as the SwiftUI content grows in any direction
+    /// (settings open, result appears, scrollbar shows in "Always" mode).
     var anchorsTopEdge: Bool = true
 
     init<Content: View>(contentRect: NSRect, @ViewBuilder content: () -> Content) {
@@ -45,17 +46,20 @@ final class FloatingPanel: NSPanel {
         self.orderOut(nil)
     }
 
-    /// Keep the top edge stationary across content-size changes so the visible
-    /// card doesn't shift upward when SwiftUI grows downward.
+    /// Keep the top edge and horizontal center stationary across content-size
+    /// changes so the visible card doesn't shift in any direction when the
+    /// SwiftUI tree's intrinsic size changes.
     override func setContentSize(_ size: NSSize) {
         guard anchorsTopEdge, isVisible else {
             super.setContentSize(size)
             return
         }
         let oldTopY = frame.origin.y + frame.size.height
+        let oldCenterX = frame.origin.x + frame.size.width / 2
         super.setContentSize(size)
         var f = frame
         f.origin.y = oldTopY - f.size.height
+        f.origin.x = oldCenterX - f.size.width / 2
         setFrameOrigin(f.origin)
     }
 }

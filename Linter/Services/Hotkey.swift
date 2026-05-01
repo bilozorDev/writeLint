@@ -176,7 +176,13 @@ final class GlobalHotkey {
         if !handlerInstalled { installHandler() }
     }
 
-    func setHotkey(_ hk: Hotkey) {
+    /// Registers `hk` as the global summon shortcut. Returns `true` on success.
+    /// On failure (chord already held by another app or system service), the
+    /// previously-registered chord is re-registered so the user is never
+    /// silently left with no global shortcut.
+    @discardableResult
+    func setHotkey(_ hk: Hotkey) -> Bool {
+        let previous = current
         unregister()
         let hotKeyID = EventHotKeyID(signature: Self.signature, id: Self.id)
         var ref: EventHotKeyRef?
@@ -184,9 +190,24 @@ final class GlobalHotkey {
         if status == noErr {
             self.hotKeyRef = ref
             self.current = hk
-        } else {
-            NSLog("Linter: failed to register hotkey (status=\(status))")
+            return true
         }
+        NSLog("Linter: failed to register hotkey \(hk.display) (status=\(status))")
+        // Roll back to the previously-registered chord so the user keeps a
+        // working summon shortcut. If THAT also fails (rare — it was working a
+        // moment ago), the user has no global shortcut and must pick a new
+        // chord; the menu-bar item is still available as a fallback summon.
+        if let previous {
+            var prevRef: EventHotKeyRef?
+            let restore = RegisterEventHotKey(previous.keyCode, previous.modifiers, hotKeyID, GetApplicationEventTarget(), 0, &prevRef)
+            if restore == noErr {
+                self.hotKeyRef = prevRef
+                self.current = previous
+            } else {
+                NSLog("Linter: failed to restore previous hotkey \(previous.display) (status=\(restore))")
+            }
+        }
+        return false
     }
 
     func currentHotkey() -> Hotkey? { current }
@@ -230,8 +251,11 @@ final class HotkeyRecordingState {
 }
 
 @MainActor
+@Observable
 final class HotkeyStore {
+    @ObservationIgnored
     private static let key = "globalHotkey.v1"
+    @ObservationIgnored
     static let shared = HotkeyStore()
 
     private(set) var current: Hotkey {
@@ -251,8 +275,14 @@ final class HotkeyStore {
         }
     }
 
-    func set(_ hk: Hotkey) {
+    /// Persists `hk` as the user's chosen chord and registers it globally.
+    /// Returns `true` on success. On registration failure, `current` is NOT
+    /// updated (so a failing chord doesn't get persisted to UserDefaults) and
+    /// `GlobalHotkey` will have rolled back to the previous chord.
+    @discardableResult
+    func set(_ hk: Hotkey) -> Bool {
+        guard GlobalHotkey.shared.setHotkey(hk) else { return false }
         current = hk
-        GlobalHotkey.shared.setHotkey(hk)
+        return true
     }
 }

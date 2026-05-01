@@ -5,10 +5,13 @@ import os
 /// Lint pipeline tracing. Writes through Apple's unified logging — visible in
 /// Xcode's console while running, and in Console.app filtering for subsystem
 /// "com.bilozor.WriteLint" / category "lint" while the app runs standalone.
-/// Inputs/outputs are marked `.public` so they actually appear in the logs
-/// (Logger redacts dynamic strings to `<private>` by default). User text is
-/// not sensitive in this app — the whole point is to see exactly what the
-/// model received and emitted.
+/// User text fields (`in=`, `raw=`, `out=`, `final=`, `input=`) are marked
+/// `.private` so they redact to `<private>` in the unified log — pasted
+/// content can plausibly include credentials, draft messages, or internal
+/// notes, and the app's footer promises "Private · on-device". Structural
+/// metadata (chunk counts, latency, error descriptions, hallucination
+/// reasons) stays `.public` so the trace remains readable in Xcode and via
+/// `log show` for the developer.
 private let lintLog = Logger(subsystem: "com.bilozor.WriteLint", category: "lint")
 
 enum LintError: Error, LocalizedError {
@@ -109,7 +112,7 @@ final class FoundationModelService {
         // token cap. Each chunk gets its own session for predictable behavior.
         let chunks = Self.splitIntoChunks(text)
 
-        lintLog.notice("─── lint start: chunks=\(chunks.count) input=\(Self.quoteForLog(text), privacy: .public)")
+        lintLog.notice("─── lint start: chunks=\(chunks.count) input=\(Self.quoteForLog(text), privacy: .private)")
 
         do {
             var output = ""
@@ -131,7 +134,7 @@ final class FoundationModelService {
                 // user-controlled `instructions` string — examples,
                 // constraints, and rules all live in there.
                 let session = LanguageModelSession(transcript: Self.buildTranscript(instructions: instructions))
-                lintLog.notice("chunk \(i): in=\(Self.quoteForLog(chunk.text), privacy: .public)")
+                lintLog.notice("chunk \(i): in=\(Self.quoteForLog(chunk.text), privacy: .private)")
 
                 // Per-chunk options.
                 // - greedy + temperature 0.0: deterministic minimal-edit
@@ -209,7 +212,7 @@ final class FoundationModelService {
                 }
                 let polished = raw.trimmingCharacters(in: .whitespacesAndNewlines)
                 let cleaned = stripWrappingQuotes(polished)
-                lintLog.notice("chunk \(i): raw=\(Self.quoteForLog(raw), privacy: .public)")
+                lintLog.notice("chunk \(i): raw=\(Self.quoteForLog(raw), privacy: .private)")
                 if cleaned != polished {
                     lintLog.notice("chunk \(i): stripped wrapping quotes")
                 }
@@ -223,7 +226,7 @@ final class FoundationModelService {
                     lintLog.notice("chunk \(i): NO-OP (model returned input verbatim)")
                     output += cleaned
                 } else {
-                    lintLog.notice("chunk \(i): out=\(Self.quoteForLog(cleaned), privacy: .public)")
+                    lintLog.notice("chunk \(i): out=\(Self.quoteForLog(cleaned), privacy: .private)")
                     output += cleaned
                 }
             }
@@ -233,7 +236,7 @@ final class FoundationModelService {
                 + Double(elapsed.components.attoseconds) / 1e15)
             let ops = Diff.diff(text, output)
             let stats = Diff.countChanges(ops)
-            lintLog.notice("─── lint done: latency=\(latencyMs)ms +\(stats.added)/-\(stats.removed) words, final=\(Self.quoteForLog(output), privacy: .public)")
+            lintLog.notice("─── lint done: latency=\(latencyMs)ms +\(stats.added)/-\(stats.removed) words, final=\(Self.quoteForLog(output), privacy: .private)")
             return LintResult(output: output, ops: ops, stats: stats, latencyMs: latencyMs)
         } catch is CancellationError {
             lintLog.notice("lint cancelled")

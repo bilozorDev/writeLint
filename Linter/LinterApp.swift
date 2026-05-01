@@ -60,16 +60,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-/// Wraps `LinterWindow` so the @State `hotkey` lives in a stable place and
-/// drives both the UI and the global Carbon registration.
+/// Wraps `LinterWindow` so the @State `hotkey` lives in a stable place. The
+/// store itself is updated by `ShortcutRecorderView` when the user picks a
+/// new chord — the recorder runs Carbon registration first and only writes
+/// back to this @State on success, so the binding always reflects what's
+/// actually registered.
 struct LinterRoot: View {
     @Bindable var store: PromptStore
     @State private var hotkey: Hotkey = HotkeyStore.shared.current
 
     var body: some View {
         LinterWindow(store: store, hotkey: $hotkey)
-            .onChange(of: hotkey) { _, new in
-                HotkeyStore.shared.set(new)
-            }
     }
 }

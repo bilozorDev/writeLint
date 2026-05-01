@@ -39,10 +39,19 @@ struct ShortcutRecorderView: View {
                 if let err = hk.validationError {
                     error = err
                     // Stay in recording mode so the user can try again.
-                } else {
+                    return
+                }
+                // Try to register globally BEFORE committing the binding —
+                // otherwise we'd update the displayed chord and silently leave
+                // the user without a working shortcut. On failure HotkeyStore
+                // rolls back to the previous chord and we surface an inline
+                // error so the user can pick another.
+                if HotkeyStore.shared.set(hk) {
                     hotkey = hk
                     error = nil
                     recording = false
+                } else {
+                    error = "\(hk.display) is in use by another app or system service. Pick another chord."
                 }
             }))
             .onChange(of: recording) { _, new in
