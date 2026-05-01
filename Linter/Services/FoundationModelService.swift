@@ -40,13 +40,17 @@ struct LintResult {
     var latencyMs: Int
 }
 
-/// Guided-generation schema. Forces the model to emit just the polished text
-/// in a single JSON field — preamble like "Sure, here is the polished text:"
-/// becomes structurally impossible because there's no field for it.
+/// Guided-generation schema. Forces the model to emit a single string field
+/// — preamble like "Sure, here is..." becomes structurally impossible
+/// because there's no field for it. Field name and Guide are deliberately
+/// transformation-neutral (not "polished") because they steer decoding even
+/// with `includeSchemaInPrompt: false` — anything semantic here would bias
+/// every Advanced-Mode custom prompt back toward polishing. The structural
+/// anti-preamble guidance ("only", "no commentary") is preserved.
 @Generable
-struct PolishedText {
-    @Guide(description: "The polished text only. No preamble, no commentary, no quote marks.")
-    let polished: String
+struct LintOutput {
+    @Guide(description: "The output text only. No preamble, no commentary, no quote marks.")
+    let output: String
 }
 
 @MainActor
@@ -167,14 +171,14 @@ final class FoundationModelService {
                 do {
                     let response = try await session.respond(
                         to: chunk.text,
-                        generating: PolishedText.self,
+                        generating: LintOutput.self,
                         // The schema is implicit because the on-device model
                         // is post-trained on guided generation — sending it
                         // again costs tokens for no quality gain.
                         includeSchemaInPrompt: false,
                         options: options
                     )
-                    raw = response.content.polished
+                    raw = response.content.output
                 } catch let e as LanguageModelSession.GenerationError {
                     // Pass through on known-benign generation errors:
                     //   - guardrailViolation: false-positives are common; a
@@ -324,16 +328,21 @@ final class FoundationModelService {
             return .addedParens
         }
 
-        // 2. Length-ratio guard, ±20% around the input word count. Only
-        //    enforced for inputs ≥5 words so a 2-word input can still
-        //    legitimately gain articles/punctuation fixes. Tightened from
-        //    1.3× per the GEC research recommendation of [0.8, 1.2].
-        //    The lower bound catches the rare case where the model deletes
-        //    legitimate content; gated to ≥8 words to leave room for
-        //    duplicate removal ("the the" → "the") on shorter inputs.
+        // 2. Length guards.
+        //    - Inputs ≥5 words: ±20% ratio per GEC literature [0.8, 1.2].
+        //    - Inputs <5 words: the 1.2× ratio is meaningless (1 word × 1.2
+        //      rounds to 1), so a 1-word input could expand to 16 words and
+        //      slip through. Use an absolute cap of input + 3 instead —
+        //      legitimate short-input fixes ("he sell book" → "He sells the
+        //      book.") don't add more than a couple of words.
+        //    Lower bound (shrinkage): ≥8 words to leave room for duplicate
+        //    removal ("the the" → "the") on shorter inputs.
         let inputWords = input.split(whereSeparator: { $0.isWhitespace }).count
         let outputWords = output.split(whereSeparator: { $0.isWhitespace }).count
         if inputWords >= 5, Double(outputWords) > Double(inputWords) * 1.2 {
+            return .wordCountExpansion(input: inputWords, output: outputWords)
+        }
+        if inputWords < 5, outputWords > inputWords + 3 {
             return .wordCountExpansion(input: inputWords, output: outputWords)
         }
         if inputWords >= 8, Double(outputWords) < Double(inputWords) * 0.8 {
