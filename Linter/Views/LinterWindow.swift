@@ -97,7 +97,14 @@ struct LinterWindow: View {
                 availability = FoundationModelService.shared.availability
             }
             PanelController.shared.onHide = {
-                text = ""
+                // Preserve typed text across hide/show (Spotlight-style) when
+                // nothing was submitted — i.e. no result on screen and no
+                // in-flight lint. If a submission occurred, clear so the next
+                // summon starts fresh. (handleAccept's auto-hide path sets
+                // text = output before hiding, so that polished text
+                // intentionally rides through to the next summon.)
+                let hasSubmission = result != nil || lintTask != nil
+                if hasSubmission { text = "" }
                 result = nil
                 settingsOpen = false
                 slideOffset = 0
