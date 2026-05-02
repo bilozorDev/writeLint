@@ -16,6 +16,12 @@ struct LinterWindow: View {
     @State private var lintTask: Task<Void, Never>?
     @State private var toast: String?
     @State private var history = PromptHistory.shared
+    /// True once the user has submitted a lint in the current session. Drives
+    /// the "preserve typed text on dismiss" rule in `onHide` — preservation
+    /// only kicks in for sessions that never submitted, so accepted-and-
+    /// auto-hidden flows clear (handleAccept nils `result` before hide(),
+    /// which would otherwise look like an unsubmitted session).
+    @State private var submittedThisSession = false
 
     /// X-offset of the page group. Animated via `withAnimation` in the
     /// open/close helpers below — kept separate from `settingsOpen` so the
@@ -88,7 +94,22 @@ struct LinterWindow: View {
         .onAppear {
             availability = FoundationModelService.shared.availability
             inputFocused = true
-            PanelController.shared.requestFocus = { inputFocused = true }
+            PanelController.shared.requestFocus = {
+                inputFocused = true
+                // Spotlight-style: when re-summoned with preserved text,
+                // select all so overtyping replaces the previous content.
+                // Two async hops give SwiftUI's focus pipeline time to
+                // install the field editor as first responder before we
+                // reach in via the AppKit responder chain.
+                guard !text.isEmpty else { return }
+                DispatchQueue.main.async {
+                    DispatchQueue.main.async {
+                        if let editor = NSApp.keyWindow?.firstResponder as? NSTextView {
+                            editor.selectAll(nil)
+                        }
+                    }
+                }
+            }
             PanelController.shared.onShow = {
                 // Re-read availability on every summon. Apple Intelligence
                 // can flip from .unavailable → .available between launch and
@@ -98,13 +119,13 @@ struct LinterWindow: View {
             }
             PanelController.shared.onHide = {
                 // Preserve typed text across hide/show (Spotlight-style) when
-                // nothing was submitted — i.e. no result on screen and no
-                // in-flight lint. If a submission occurred, clear so the next
-                // summon starts fresh. (handleAccept's auto-hide path sets
-                // text = output before hiding, so that polished text
-                // intentionally rides through to the next summon.)
-                let hasSubmission = result != nil || lintTask != nil
-                if hasSubmission { text = "" }
+                // nothing was submitted in this session. Once the user has
+                // submitted, the session is "done" and dismissing clears —
+                // covers the auto-hide-after-accept path too, where
+                // handleAccept nils `result` before hide() and would
+                // otherwise look like an unsubmitted session.
+                if submittedThisSession { text = "" }
+                submittedThisSession = false
                 result = nil
                 settingsOpen = false
                 slideOffset = 0
@@ -297,6 +318,7 @@ struct LinterWindow: View {
         guard case .available = availability else { return }
         cancelLint()
         history.record(text: text)
+        submittedThisSession = true
         let instructions = store.instructions
         let toLint = text
         thinking = true
