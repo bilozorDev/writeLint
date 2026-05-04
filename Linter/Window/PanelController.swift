@@ -24,6 +24,13 @@ final class PanelController {
     /// resize on first show. Must stay in lock-step with `LinterWindow.pageWidth`.
     private let panelWidth: CGFloat = 660
 
+    /// Mouse-down monitors installed while the panel is visible to dismiss
+    /// on click-outside (Spotlight-style). Local monitor lets clicks on the
+    /// panel and its attached sheets through; everything else triggers hide.
+    /// Global monitor catches clicks in other apps and the system menu bar.
+    private var localMouseMonitor: Any?
+    private var globalMouseMonitor: Any?
+
     /// Set by `LinterWindow` so summon can re-focus the input field.
     var requestFocus: () -> Void = {}
     /// Set by `LinterWindow` so panel-hide can reset transient state
@@ -68,6 +75,7 @@ final class PanelController {
         centerOnActiveScreen()
         NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
+        installDismissMonitors()
         onShow()
         // Focus on next runloop turn so the SwiftUI view has installed.
         DispatchQueue.main.async { [weak self] in
@@ -76,6 +84,7 @@ final class PanelController {
     }
 
     func hide() {
+        removeDismissMonitors()
         panel?.orderOut(nil)
         // Defer the state-clearing closure to the next runloop turn so it
         // never re-enters AppKit/SwiftUI mid-update if `hide()` was called
@@ -87,6 +96,29 @@ final class PanelController {
             guard let self, self.sessionStamp == stamp else { return }
             cb()
         }
+    }
+
+    private func installDismissMonitors() {
+        let mask: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+        globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] _ in
+            self?.hide()
+        }
+        localMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] event in
+            guard let self, let panel = self.panel else { return event }
+            // Pass through clicks on the panel and on any sheet attached to it
+            // — SwiftUI `.alert` (e.g. SettingsPanel's Revert confirmation)
+            // renders as a window-modal sheet whose `sheetParent === panel`.
+            if event.window === panel || event.window?.sheetParent === panel {
+                return event
+            }
+            self.hide()
+            return event
+        }
+    }
+
+    private func removeDismissMonitors() {
+        if let t = localMouseMonitor  { NSEvent.removeMonitor(t); localMouseMonitor  = nil }
+        if let t = globalMouseMonitor { NSEvent.removeMonitor(t); globalMouseMonitor = nil }
     }
 
     private func centerOnActiveScreen() {
