@@ -459,8 +459,14 @@ final class FoundationModelService {
         }
 
         // 2. Length guards.
-        //    - Inputs ≥5 words: ±20% ratio per GEC literature [0.8, 1.2].
-        //    - Inputs <5 words: the 1.2× ratio is meaningless (1 word × 1.2
+        //    - Inputs ≥5 words: upper bound 1.3×. GEC literature suggests
+        //      ±20%, but real-world dictation/typing routinely drops articles,
+        //      prepositions, and helping verbs that a polish should restore —
+        //      a terse 42-word status note can grow to 51 (1.21×) just from
+        //      adding "the"/"a" and splitting run-on sentences. 1.3× still
+        //      catches the typical hallucination shape ("like im talking to
+        //      Tim" → "Hey Tim, how are you doing today?", 5→7 = 1.4×).
+        //    - Inputs <5 words: the ratio is meaningless (1 word × 1.3
         //      rounds to 1), so a 1-word input could expand to 16 words and
         //      slip through. Use an absolute cap of input + 3 instead —
         //      legitimate short-input fixes ("he sell book" → "He sells the
@@ -469,7 +475,7 @@ final class FoundationModelService {
         //    removal ("the the" → "the") on shorter inputs.
         let inputWords = input.split(whereSeparator: { $0.isWhitespace }).count
         let outputWords = output.split(whereSeparator: { $0.isWhitespace }).count
-        if inputWords >= 5, Double(outputWords) > Double(inputWords) * 1.2 {
+        if inputWords >= 5, Double(outputWords) > Double(inputWords) * 1.3 {
             return .wordCountExpansion(input: inputWords, output: outputWords)
         }
         if inputWords < 5, outputWords > inputWords + 3 {

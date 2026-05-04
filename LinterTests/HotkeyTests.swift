@@ -84,21 +84,43 @@ struct HotkeyTests {
 
     // MARK: in-app conflict — ⌘↩ is the submit shortcut
 
-    @Test func cmdReturnIsRejectedAsInAppSubmit() {
+    @Test func cmdReturnIsRejectedWithSubmitShortcutMessage() {
+        // ⌘↩ is checked before the generic pure-Cmd rule so the user gets a
+        // tailored message. Verify the actual message text — earlier this
+        // test only asserted "rejected somehow" and so didn't actually
+        // exercise the in-app branch.
         let hk = Self.hk(kVK_Return, Self.cmd)
-        // ⌘ alone fails the pure-Cmd rule first; that's still a rejection.
-        // Combine with shift to verify the keypath that hits the in-app rule.
-        // Here we just check the lone-Cmd path:
-        #expect(hk.validationError != nil)
+        let err = hk.validationError
+        #expect(err?.contains("submit shortcut") == true,
+                "expected the in-app submit message; got \(String(describing: err))")
+    }
+
+    @Test func cmdKeypadEnterAlsoRejectedWithSubmitShortcutMessage() {
+        // Same rule covers the keypad Return as well — the CommandKeyMonitor
+        // routes both to submit, so both must surface the same warning.
+        let hk = Self.hk(kVK_ANSI_KeypadEnter, Self.cmd)
+        let err = hk.validationError
+        #expect(err?.contains("submit shortcut") == true,
+                "expected the in-app submit message for keypad Enter; got \(String(describing: err))")
     }
 
     // MARK: display rendering — symbol order is ⌃⌥⇧⌘<key>
 
-    @Test func displayRendersModifiersInCanonicalOrder() {
+    @Test func displayRendersTwoModifiersInCanonicalOrder() {
         let hk = Self.hk(kVK_ANSI_L, Self.cmdShift)
         let d = hk.display
         // The L can render via the keyboard layout fallback, but the mods
         // are pure string concat. Just check the prefix.
         #expect(d.hasPrefix("⇧⌘"), "got display=\(d.debugDescription)")
+    }
+
+    @Test func displayRendersAllFourModifiersInCanonicalOrder() {
+        // Maximum chord: ⌃⌥⇧⌘<key>. This is the case the canonical-order
+        // rule actually exists for — earlier we only checked the 2-modifier
+        // prefix, which doesn't catch a swap between the rarer modifiers.
+        let allMods = UInt32(controlKey | optionKey | shiftKey | cmdKey)
+        let hk = Self.hk(kVK_ANSI_L, allMods)
+        let d = hk.display
+        #expect(d.hasPrefix("⌃⌥⇧⌘"), "got display=\(d.debugDescription)")
     }
 }

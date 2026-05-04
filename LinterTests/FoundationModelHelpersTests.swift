@@ -96,8 +96,9 @@ struct FoundationModelHelpersTests {
     }
 
     @Test func hallucinationFlagsLargeExpansionAtFiveOrMoreWords() {
-        // Inputs ≥5 words: the [0.8, 1.2] ratio applies. Expanding a 5-word
-        // input to 10 words is way over 1.2× — flag it.
+        // Inputs ≥5 words: the upper-bound 1.3× ratio applies (the lower
+        // 0.8× bound only kicks in at ≥8 words — see the shrinkage test
+        // below). Expanding a 5-word input to 12 words is way over 1.3×.
         let r = FoundationModelService.hallucinationReason(
             input: "she sell that book yo",  // 5 words
             output: "She sells that book to you, and it is very interesting indeed."

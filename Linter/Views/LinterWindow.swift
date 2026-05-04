@@ -204,6 +204,15 @@ struct LinterWindow: View {
                     }
                 } else {
                     Divider().background(Palette.divider(dark))
+                    if r.issue != nil {
+                        // Partial fallback: at least one chunk fell back to
+                        // its original text but other chunks produced real
+                        // edits, so the diff below mixes polished and
+                        // un-polished sections. Surface a slim notice so the
+                        // user knows the polish was incomplete — without it,
+                        // the green stats reads as full success.
+                        PartialIssueNotice(dark: dark)
+                    }
                     ScrollView {
                         DiffView(ops: r.ops, dark: dark)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -529,6 +538,27 @@ private struct IssueBar: View {
         .overlay(alignment: .top) {
             Rectangle().fill(Palette.divider(dark)).frame(height: 1)
         }
+    }
+}
+
+/// Slim warning shown above the diff when some chunks fell back but others
+/// produced real edits. Mirrors the `IssueBar` palette but at single-line
+/// height so it sits unobtrusively atop the diff scroll view. No actions —
+/// the user dismisses by accepting/rejecting the diff itself.
+private struct PartialIssueNotice: View {
+    let dark: Bool
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(Palette.removed)
+            Text("Some sections couldn't be polished and were kept as-is.")
+                .font(.system(size: 11.5))
+                .foregroundStyle(Palette.sub(dark))
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 14).padding(.vertical, 6)
+        .background(Palette.removed.opacity(dark ? 0.10 : 0.06))
     }
 }
 

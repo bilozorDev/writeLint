@@ -49,9 +49,17 @@ struct Hotkey: Equatable, Codable, Hashable {
             return "Add a modifier (⌘, ⌃, ⌥, or ⇧)."
         }
 
+        // In-app conflict — checked BEFORE the pure-Cmd rule below so ⌘↩
+        // gets the tailored "submit shortcut" message instead of the generic
+        // "conflicts with a system shortcut" line. ⌘↩ isn't really a system
+        // shortcut; it's our own submit, and the message should say so.
+        let onlyCmd = hasCmd && !hasShift && !hasOpt && !hasCtrl
+        if (Int(keyCode) == kVK_Return || Int(keyCode) == kVK_ANSI_KeypadEnter) && onlyCmd {
+            return "⌘↩ is the in-app submit shortcut. Pick another chord."
+        }
+
         // Reject ⌘+single-key (covers ⌘C/V/X/Z/A/S/N/O/W/Q/F/P/T/H/M, ⌘+digit).
         // Standard rule: pure Cmd combos are reserved for app/system shortcuts.
-        let onlyCmd = hasCmd && !hasShift && !hasOpt && !hasCtrl
         if onlyCmd {
             return "⌘\(Self.keyName(forKeyCode: keyCode)) conflicts with a system shortcut. Add ⇧, ⌥, or ⌃."
         }
@@ -67,20 +75,7 @@ struct Hotkey: Equatable, Codable, Hashable {
             return "\(display) conflicts with \(entry.label)."
         }
 
-        // In-app conflicts.
-        if (Int(keyCode) == kVK_Return || Int(keyCode) == kVK_ANSI_KeypadEnter) && isCmdOnly {
-            return "⌘↩ is the in-app submit shortcut. Pick another chord."
-        }
-
         return nil
-    }
-
-    private var isCmdOnly: Bool {
-        let hasShift = modifiers & UInt32(shiftKey)   != 0
-        let hasOpt   = modifiers & UInt32(optionKey)  != 0
-        let hasCtrl  = modifiers & UInt32(controlKey) != 0
-        let hasCmd   = modifiers & UInt32(cmdKey)     != 0
-        return hasCmd && !hasShift && !hasOpt && !hasCtrl
     }
 
     private struct SystemChord {
