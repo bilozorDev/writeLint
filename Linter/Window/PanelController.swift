@@ -71,6 +71,11 @@ final class PanelController {
 
     func show() {
         guard let panel else { return }
+        // Already visible → no-op. Without this, a redundant show() (e.g.
+        // tapping the menu-bar "Show Write Lint" item while the panel is
+        // somehow already on screen) would re-run installDismissMonitors and
+        // leak the previous monitor pair.
+        if panel.isVisible { return }
         sessionStamp &+= 1
         centerOnActiveScreen()
         NSApp.activate(ignoringOtherApps: true)

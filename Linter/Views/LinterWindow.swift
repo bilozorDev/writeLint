@@ -100,13 +100,17 @@ struct LinterWindow: View {
                 // select all so overtyping replaces the previous content.
                 // Two async hops give SwiftUI's focus pipeline time to
                 // install the field editor as first responder before we
-                // reach in via the AppKit responder chain.
+                // reach in via the AppKit responder chain. Scope the
+                // responder lookup to OUR panel so we don't accidentally
+                // selectAll in some other window that briefly grabbed key
+                // status during activation.
                 guard !text.isEmpty else { return }
                 DispatchQueue.main.async {
                     DispatchQueue.main.async {
-                        if let editor = NSApp.keyWindow?.firstResponder as? NSTextView {
-                            editor.selectAll(nil)
-                        }
+                        guard let panel = NSApp.keyWindow as? FloatingPanel,
+                              let editor = panel.firstResponder as? NSTextView
+                        else { return }
+                        editor.selectAll(nil)
                     }
                 }
             }
