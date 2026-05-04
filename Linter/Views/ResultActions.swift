@@ -36,6 +36,7 @@ struct ResultActions: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityIdentifier("Linter.CopyButton")
 
             Button(action: onReject) {
                 Text("Reject")
@@ -49,6 +50,7 @@ struct ResultActions: View {
                     )
             }
             .buttonStyle(.plain)
+            .accessibilityIdentifier("Linter.RejectButton")
 
             Button(action: onAccept) {
                 HStack(spacing: 5) {
@@ -60,6 +62,7 @@ struct ResultActions: View {
                 .background(RoundedRectangle(cornerRadius: 7).fill(Palette.accent))
             }
             .buttonStyle(.plain)
+            .accessibilityIdentifier("Linter.AcceptButton")
         }
         .padding(.horizontal, 12).padding(.vertical, 10)
         .background(Palette.footerBg(dark))

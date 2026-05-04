@@ -52,6 +52,7 @@ struct DiffView: View {
             .padding(.horizontal, 16).padding(.vertical, 12)
         }
         .textSelection(.enabled)
+        .accessibilityIdentifier("Linter.DiffView")
     }
 
     private enum Filter { case original, corrected }

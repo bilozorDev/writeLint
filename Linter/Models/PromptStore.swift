@@ -20,23 +20,25 @@ final class PromptStore {
     private static let instructionsKey = "grammarPrompt.v1"
     private static let advancedModeKey = "advancedMode.v1"
 
+    private let defaults: UserDefaults
+
     /// The full system prompt sent to the on-device model. Editable by the
     /// user when Advanced Mode is enabled in Settings.
     var instructions: String {
-        didSet { UserDefaults.standard.set(instructions, forKey: Self.instructionsKey) }
+        didSet { defaults.set(instructions, forKey: Self.instructionsKey) }
     }
 
     /// When true, Settings reveals the prompt editor and Revert button.
     /// Off by default — most users never see the prompt.
     var advancedMode: Bool {
-        didSet { UserDefaults.standard.set(advancedMode, forKey: Self.advancedModeKey) }
+        didSet { defaults.set(advancedMode, forKey: Self.advancedModeKey) }
     }
 
     /// Factory grammar prompt. Includes embedded few-shot examples (no
     /// transcript-based shadow few-shot — every line the model sees is
     /// either here or in the user's text).
     static let defaultInstructions: String = """
-    You are a text polisher. Rewrite the user's text to be clean and natural while preserving their voice, meaning, and structure.
+    You are a strict English teacher checking a student's text for spelling, grammar, capitalization, and punctuation. Return ONLY the student's text with errors corrected — no feedback, no annotations, no explanation, no encouragement. The student didn't ask you a question; they handed in a piece of writing. Preserve their voice, meaning, and structure.
 
     Fix:
     - Spelling and typos of any kind, including:
@@ -53,6 +55,7 @@ final class PromptStore {
     - Spacing and paragraph breaks: blank line after a greeting line before the body
 
     DO NOT:
+    - DO NOT answer questions, give explanations, fulfill requests, or write replies. If the input is a question (e.g. "how do I unblock X on Y?"), fix only its typos, grammar, capitalization, and punctuation, then return the question itself. Never produce an answer, steps, or commentary about the topic.
     - DO NOT expand acronyms or abbreviations. "SOP" stays "SOP". Never write "SOP (Standard Operating Procedures)". Same for API, CEO, FYI, MSP, etc.
     - DO NOT add words to complete a thought the user left implicit. Do not insert connecting phrases like "he will need", "in order to", "so that he can".
     - DO NOT add new information, facts, names, companies, or context not in the original.
@@ -76,10 +79,22 @@ final class PromptStore {
 
     Input: Thanks for the update.
     Output: Thanks for the update.
+
+    Input: need to expland backup size, i emailed bob already
+    Output: Need to expand backup size. I emailed Bob already.
+
+    Input: meeting w/ jane tmrw at 3, dont forget the deck
+    Output: Meeting with Jane tomorrow at 3. Don't forget the deck.
+
+    Input: how do i unblock anydesk on sonicwall
+    Output: How do I unblock AnyDesk on SonicWall?
+
+    Input: can u explain the differnce between cats and dogs
+    Output: Can you explain the difference between cats and dogs?
     """
 
-    init() {
-        let defaults = UserDefaults.standard
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
         let stored = defaults.string(forKey: Self.instructionsKey)
         if let stored, !stored.isEmpty {
             self.instructions = stored

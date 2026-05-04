@@ -16,6 +16,12 @@ struct LinterWindow: View {
     @State private var lintTask: Task<Void, Never>?
     @State private var toast: String?
     @State private var history = PromptHistory.shared
+    /// True once the user has submitted a lint in the current session. Drives
+    /// the "preserve typed text on dismiss" rule in `onHide` — preservation
+    /// only kicks in for sessions that never submitted, so accepted-and-
+    /// auto-hidden flows clear (handleAccept nils `result` before hide(),
+    /// which would otherwise look like an unsubmitted session).
+    @State private var submittedThisSession = false
 
     /// X-offset of the page group. Animated via `withAnimation` in the
     /// open/close helpers below — kept separate from `settingsOpen` so the
@@ -84,10 +90,30 @@ struct LinterWindow: View {
         .shadow(color: .black.opacity(0.18), radius: 18, y: 10)
         .padding(8)
         .padding(28)
+        .accessibilityIdentifier("Linter.PanelRoot")
         .onAppear {
             availability = FoundationModelService.shared.availability
             inputFocused = true
-            PanelController.shared.requestFocus = { inputFocused = true }
+            PanelController.shared.requestFocus = {
+                inputFocused = true
+                // Spotlight-style: when re-summoned with preserved text,
+                // select all so overtyping replaces the previous content.
+                // Two async hops give SwiftUI's focus pipeline time to
+                // install the field editor as first responder before we
+                // reach in via the AppKit responder chain. Scope the
+                // responder lookup to OUR panel so we don't accidentally
+                // selectAll in some other window that briefly grabbed key
+                // status during activation.
+                guard !text.isEmpty else { return }
+                DispatchQueue.main.async {
+                    DispatchQueue.main.async {
+                        guard let panel = NSApp.keyWindow as? FloatingPanel,
+                              let editor = panel.firstResponder as? NSTextView
+                        else { return }
+                        editor.selectAll(nil)
+                    }
+                }
+            }
             PanelController.shared.onShow = {
                 // Re-read availability on every summon. Apple Intelligence
                 // can flip from .unavailable → .available between launch and
@@ -96,7 +122,14 @@ struct LinterWindow: View {
                 availability = FoundationModelService.shared.availability
             }
             PanelController.shared.onHide = {
-                text = ""
+                // Preserve typed text across hide/show (Spotlight-style) when
+                // nothing was submitted in this session. Once the user has
+                // submitted, the session is "done" and dismissing clears —
+                // covers the auto-hide-after-accept path too, where
+                // handleAccept nils `result` before hide() and would
+                // otherwise look like an unsubmitted session.
+                if submittedThisSession { text = "" }
+                submittedThisSession = false
                 result = nil
                 settingsOpen = false
                 slideOffset = 0
@@ -154,14 +187,36 @@ struct LinterWindow: View {
                 ThinkingBar(dark: dark)
             } else if let r = result {
                 if r.stats.added == 0 && r.stats.removed == 0 {
-                    CleanBar(
-                        latencyMs: r.latencyMs,
-                        copied: copied,
-                        dark: dark,
-                        onCopy: handleCopy
-                    )
+                    if let issue = r.issue {
+                        // Fallback fired (hallucination, generation error,
+                        // malformed output) — output==input is a *failure*,
+                        // not a clean run. Show a warning bar with the reason
+                        // instead of the green "already clean" check.
+                        IssueBar(
+                            issue: issue,
+                            latencyMs: r.latencyMs,
+                            dark: dark,
+                            onDismiss: { result = nil }
+                        )
+                    } else {
+                        CleanBar(
+                            latencyMs: r.latencyMs,
+                            copied: copied,
+                            dark: dark,
+                            onCopy: handleCopy
+                        )
+                    }
                 } else {
                     Divider().background(Palette.divider(dark))
+                    if r.issue != nil {
+                        // Partial fallback: at least one chunk fell back to
+                        // its original text but other chunks produced real
+                        // edits, so the diff below mixes polished and
+                        // un-polished sections. Surface a slim notice so the
+                        // user knows the polish was incomplete — without it,
+                        // the green stats reads as full success.
+                        PartialIssueNotice(dark: dark)
+                    }
                     ScrollView {
                         DiffView(ops: r.ops, dark: dark)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -253,6 +308,15 @@ struct LinterWindow: View {
     private static let maxInputCharacters: Int = 10_000
 
     private func submit() {
+        // If the on-screen result is a *failed* polish (issue set, no diff),
+        // ⌘⏎ must NOT copy-and-close — the "output" is just the user's
+        // original text, and silently shipping it to the clipboard while the
+        // panel disappears feels like a successful polish. Treat ⌘⏎ as
+        // "dismiss the warning" instead, so the user can edit and resubmit.
+        if let r = result, r.issue != nil, r.stats.added == 0, r.stats.removed == 0 {
+            result = nil
+            return
+        }
         // If a result is on screen, ⌘⏎ accepts it (matches the Accept button).
         // Otherwise, kick off a new lint.
         if result != nil {
@@ -267,6 +331,7 @@ struct LinterWindow: View {
         guard case .available = availability else { return }
         cancelLint()
         history.record(text: text)
+        submittedThisSession = true
         let instructions = store.instructions
         let toLint = text
         thinking = true
@@ -414,6 +479,90 @@ private struct CleanBar: View {
         .overlay(alignment: .top) {
             Rectangle().fill(Palette.divider(dark)).frame(height: 1)
         }
+    }
+}
+
+/// Warning bar shown when a polish failed and we returned the user's text
+/// untouched. Mirrors `CleanBar`'s structural footprint so the panel resizes
+/// the same way, but uses a warning palette and shows the reason. Esc clears
+/// the bar (same as `CleanBar`); there's no Copy because the displayed text
+/// is identical to what's in the input field above.
+private struct IssueBar: View {
+    let issue: LintIssue
+    let latencyMs: Int
+    let dark: Bool
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            ZStack {
+                Circle()
+                    .fill(Palette.removed.opacity(dark ? 0.22 : 0.16))
+                    .frame(width: 22, height: 22)
+                Image(systemName: "exclamationmark")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(Palette.removed)
+            }
+            VStack(alignment: .leading, spacing: 1) {
+                Text(issue.headline)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Palette.text(dark))
+                Text(issue.detail)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(Palette.sub(dark))
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 8)
+            HStack(spacing: 10) {
+                Text("\(latencyMs)ms")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Palette.sub(dark))
+                HStack(spacing: 3) {
+                    Image(systemName: "apple.logo").font(.system(size: 10))
+                    Text("on-device").font(.system(size: 11))
+                }
+                .foregroundStyle(Palette.sub(dark))
+            }
+            Button(action: onDismiss) {
+                Text("Dismiss")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Palette.text(dark))
+                    .padding(.horizontal, 12).padding(.vertical, 5)
+                    .background(
+                        RoundedRectangle(cornerRadius: 7)
+                            .fill(Palette.surface(dark))
+                            .overlay(RoundedRectangle(cornerRadius: 7).stroke(Palette.divider(dark), lineWidth: 0.5))
+                    )
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 14).padding(.vertical, 12)
+        .background(Palette.footerBg(dark))
+        .overlay(alignment: .top) {
+            Rectangle().fill(Palette.divider(dark)).frame(height: 1)
+        }
+    }
+}
+
+/// Slim warning shown above the diff when some chunks fell back but others
+/// produced real edits. Mirrors the `IssueBar` palette but at single-line
+/// height so it sits unobtrusively atop the diff scroll view. No actions —
+/// the user dismisses by accepting/rejecting the diff itself.
+private struct PartialIssueNotice: View {
+    let dark: Bool
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(Palette.removed)
+            Text("Some sections couldn't be polished and were kept as-is.")
+                .font(.system(size: 11.5))
+                .foregroundStyle(Palette.sub(dark))
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 14).padding(.vertical, 6)
+        .background(Palette.removed.opacity(dark ? 0.10 : 0.06))
     }
 }
 

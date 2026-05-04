@@ -6,8 +6,31 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		EAEE3AFF2FA53D9200B42104 /* SnapshotTesting in Frameworks */ = {isa = PBXBuildFile; productRef = EAEE3AFE2FA53D9200B42104 /* SnapshotTesting */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		EAEE3AE92FA53CDF00B42104 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = EAEE39D52FA3C63A00B42104 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = EAEE39DC2FA3C63A00B42104;
+			remoteInfo = Linter;
+		};
+		EAEE3AF82FA53CFB00B42104 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = EAEE39D52FA3C63A00B42104 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = EAEE39DC2FA3C63A00B42104;
+			remoteInfo = Linter;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileReference section */
 		EAEE39DD2FA3C63A00B42104 /* Linter.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Linter.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		EAEE3AE52FA53CDF00B42104 /* LinterTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LinterTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		EAEE3AF22FA53CFB00B42104 /* LinterUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LinterUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -16,10 +39,35 @@
 			path = Linter;
 			sourceTree = "<group>";
 		};
+		EAEE3AE62FA53CDF00B42104 /* LinterTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = LinterTests;
+			sourceTree = "<group>";
+		};
+		EAEE3AF32FA53CFB00B42104 /* LinterUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = LinterUITests;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		EAEE39DA2FA3C63A00B42104 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		EAEE3AE22FA53CDF00B42104 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				EAEE3AFF2FA53D9200B42104 /* SnapshotTesting in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		EAEE3AEF2FA53CFB00B42104 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -33,6 +81,8 @@
 			isa = PBXGroup;
 			children = (
 				EAEE39DF2FA3C63A00B42104 /* Linter */,
+				EAEE3AE62FA53CDF00B42104 /* LinterTests */,
+				EAEE3AF32FA53CFB00B42104 /* LinterUITests */,
 				EAEE39DE2FA3C63A00B42104 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -41,6 +91,8 @@
 			isa = PBXGroup;
 			children = (
 				EAEE39DD2FA3C63A00B42104 /* Linter.app */,
+				EAEE3AE52FA53CDF00B42104 /* LinterTests.xctest */,
+				EAEE3AF22FA53CFB00B42104 /* LinterUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -70,6 +122,53 @@
 			productReference = EAEE39DD2FA3C63A00B42104 /* Linter.app */;
 			productType = "com.apple.product-type.application";
 		};
+		EAEE3AE42FA53CDF00B42104 /* LinterTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = EAEE3AED2FA53CDF00B42104 /* Build configuration list for PBXNativeTarget "LinterTests" */;
+			buildPhases = (
+				EAEE3AE12FA53CDF00B42104 /* Sources */,
+				EAEE3AE22FA53CDF00B42104 /* Frameworks */,
+				EAEE3AE32FA53CDF00B42104 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				EAEE3AEA2FA53CDF00B42104 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				EAEE3AE62FA53CDF00B42104 /* LinterTests */,
+			);
+			name = LinterTests;
+			packageProductDependencies = (
+				EAEE3AFE2FA53D9200B42104 /* SnapshotTesting */,
+			);
+			productName = LinterTests;
+			productReference = EAEE3AE52FA53CDF00B42104 /* LinterTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		EAEE3AF12FA53CFB00B42104 /* LinterUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = EAEE3AFA2FA53CFB00B42104 /* Build configuration list for PBXNativeTarget "LinterUITests" */;
+			buildPhases = (
+				EAEE3AEE2FA53CFB00B42104 /* Sources */,
+				EAEE3AEF2FA53CFB00B42104 /* Frameworks */,
+				EAEE3AF02FA53CFB00B42104 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				EAEE3AF92FA53CFB00B42104 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				EAEE3AF32FA53CFB00B42104 /* LinterUITests */,
+			);
+			name = LinterUITests;
+			packageProductDependencies = (
+			);
+			productName = LinterUITests;
+			productReference = EAEE3AF22FA53CFB00B42104 /* LinterUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -83,6 +182,14 @@
 					EAEE39DC2FA3C63A00B42104 = {
 						CreatedOnToolsVersion = 26.4.1;
 					};
+					EAEE3AE42FA53CDF00B42104 = {
+						CreatedOnToolsVersion = 26.4.1;
+						TestTargetID = EAEE39DC2FA3C63A00B42104;
+					};
+					EAEE3AF12FA53CFB00B42104 = {
+						CreatedOnToolsVersion = 26.4.1;
+						TestTargetID = EAEE39DC2FA3C63A00B42104;
+					};
 				};
 			};
 			buildConfigurationList = EAEE39D82FA3C63A00B42104 /* Build configuration list for PBXProject "Linter" */;
@@ -94,18 +201,37 @@
 			);
 			mainGroup = EAEE39D42FA3C63A00B42104;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				EAEE3AFD2FA53D9200B42104 /* XCRemoteSwiftPackageReference "swift-snapshot-testing" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = EAEE39DE2FA3C63A00B42104 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
 				EAEE39DC2FA3C63A00B42104 /* Linter */,
+				EAEE3AE42FA53CDF00B42104 /* LinterTests */,
+				EAEE3AF12FA53CFB00B42104 /* LinterUITests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		EAEE39DB2FA3C63A00B42104 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		EAEE3AE32FA53CDF00B42104 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		EAEE3AF02FA53CFB00B42104 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -122,7 +248,34 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		EAEE3AE12FA53CDF00B42104 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		EAEE3AEE2FA53CFB00B42104 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		EAEE3AEA2FA53CDF00B42104 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = EAEE39DC2FA3C63A00B42104 /* Linter */;
+			targetProxy = EAEE3AE92FA53CDF00B42104 /* PBXContainerItemProxy */;
+		};
+		EAEE3AF92FA53CFB00B42104 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = EAEE39DC2FA3C63A00B42104 /* Linter */;
+			targetProxy = EAEE3AF82FA53CFB00B42104 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		EAEE39E62FA3C63B00B42104 /* Debug */ = {
@@ -315,6 +468,84 @@
 			};
 			name = Release;
 		};
+		EAEE3AEB2FA53CDF00B42104 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = J7F9MRA4G4;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = Hexaget.LinterTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Linter.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Linter";
+			};
+			name = Debug;
+		};
+		EAEE3AEC2FA53CDF00B42104 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = J7F9MRA4G4;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = Hexaget.LinterTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Linter.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Linter";
+			};
+			name = Release;
+		};
+		EAEE3AFB2FA53CFB00B42104 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = J7F9MRA4G4;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = Hexaget.LinterUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_TARGET_NAME = Linter;
+			};
+			name = Debug;
+		};
+		EAEE3AFC2FA53CFB00B42104 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = J7F9MRA4G4;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = Hexaget.LinterUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_TARGET_NAME = Linter;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -336,7 +567,44 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+		EAEE3AED2FA53CDF00B42104 /* Build configuration list for PBXNativeTarget "LinterTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				EAEE3AEB2FA53CDF00B42104 /* Debug */,
+				EAEE3AEC2FA53CDF00B42104 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		EAEE3AFA2FA53CFB00B42104 /* Build configuration list for PBXNativeTarget "LinterUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				EAEE3AFB2FA53CFB00B42104 /* Debug */,
+				EAEE3AFC2FA53CFB00B42104 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		EAEE3AFD2FA53D9200B42104 /* XCRemoteSwiftPackageReference "swift-snapshot-testing" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/pointfreeco/swift-snapshot-testing";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.19.2;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		EAEE3AFE2FA53D9200B42104 /* SnapshotTesting */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = EAEE3AFD2FA53D9200B42104 /* XCRemoteSwiftPackageReference "swift-snapshot-testing" */;
+			productName = SnapshotTesting;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = EAEE39D52FA3C63A00B42104 /* Project object */;
 }

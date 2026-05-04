@@ -2,6 +2,16 @@ import AppKit
 import SwiftUI
 import Observation
 
+/// Compute the panel origin so the panel sits Spotlight-style — horizontally
+/// centered on the given screen, slightly above center vertically. Pure
+/// function over its inputs; testable without an NSPanel. Used by
+/// `PanelController.centerOnActiveScreen()`.
+func panelOrigin(for screenFrame: NSRect, panelSize: NSSize) -> NSPoint {
+    let x = screenFrame.midX - panelSize.width / 2
+    let y = screenFrame.midY + panelSize.height * 0.2 - panelSize.height / 2
+    return NSPoint(x: x, y: y)
+}
+
 @MainActor
 @Observable
 final class PanelController {
@@ -13,6 +23,13 @@ final class PanelController {
     /// out, but a seed close to the final width avoids a visible 1-frame
     /// resize on first show. Must stay in lock-step with `LinterWindow.pageWidth`.
     private let panelWidth: CGFloat = 660
+
+    /// Mouse-down monitors installed while the panel is visible to dismiss
+    /// on click-outside (Spotlight-style). Local monitor lets clicks on the
+    /// panel and its attached sheets through; everything else triggers hide.
+    /// Global monitor catches clicks in other apps and the system menu bar.
+    private var localMouseMonitor: Any?
+    private var globalMouseMonitor: Any?
 
     /// Set by `LinterWindow` so summon can re-focus the input field.
     var requestFocus: () -> Void = {}
@@ -54,10 +71,16 @@ final class PanelController {
 
     func show() {
         guard let panel else { return }
+        // Already visible → no-op. Without this, a redundant show() (e.g.
+        // tapping the menu-bar "Show Write Lint" item while the panel is
+        // somehow already on screen) would re-run installDismissMonitors and
+        // leak the previous monitor pair.
+        if panel.isVisible { return }
         sessionStamp &+= 1
         centerOnActiveScreen()
         NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
+        installDismissMonitors()
         onShow()
         // Focus on next runloop turn so the SwiftUI view has installed.
         DispatchQueue.main.async { [weak self] in
@@ -66,6 +89,7 @@ final class PanelController {
     }
 
     func hide() {
+        removeDismissMonitors()
         panel?.orderOut(nil)
         // Defer the state-clearing closure to the next runloop turn so it
         // never re-enters AppKit/SwiftUI mid-update if `hide()` was called
@@ -77,6 +101,29 @@ final class PanelController {
             guard let self, self.sessionStamp == stamp else { return }
             cb()
         }
+    }
+
+    private func installDismissMonitors() {
+        let mask: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+        globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] _ in
+            self?.hide()
+        }
+        localMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] event in
+            guard let self, let panel = self.panel else { return event }
+            // Pass through clicks on the panel and on any sheet attached to it
+            // — SwiftUI `.alert` (e.g. SettingsPanel's Revert confirmation)
+            // renders as a window-modal sheet whose `sheetParent === panel`.
+            if event.window === panel || event.window?.sheetParent === panel {
+                return event
+            }
+            self.hide()
+            return event
+        }
+    }
+
+    private func removeDismissMonitors() {
+        if let t = localMouseMonitor  { NSEvent.removeMonitor(t); localMouseMonitor  = nil }
+        if let t = globalMouseMonitor { NSEvent.removeMonitor(t); globalMouseMonitor = nil }
     }
 
     private func centerOnActiveScreen() {
@@ -98,11 +145,6 @@ final class PanelController {
         let wasAnchoring = panel.anchorsTopEdge
         panel.anchorsTopEdge = false
         defer { panel.anchorsTopEdge = wasAnchoring }
-        let size = panel.frame.size
-        let visible = screen.visibleFrame
-        let x = visible.midX - size.width / 2
-        // Place a bit above center, like Spotlight.
-        let y = visible.midY + size.height * 0.2 - size.height / 2
-        panel.setFrameOrigin(NSPoint(x: x, y: y))
+        panel.setFrameOrigin(panelOrigin(for: screen.visibleFrame, panelSize: panel.frame.size))
     }
 }
