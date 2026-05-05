@@ -1,6 +1,6 @@
 import Testing
 import AppKit
-@testable import Linter
+@testable import Write_Lint
 
 @Suite("panelOrigin — Spotlight-style centering math, pure")
 struct PanelOriginTests {

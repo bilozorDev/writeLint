@@ -1,5 +1,5 @@
 import Testing
-@testable import Linter
+@testable import Write_Lint
 
 @Suite("Diff — pure LCS over whitespace-aware tokens")
 struct DiffTests {

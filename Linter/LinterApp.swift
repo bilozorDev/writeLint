@@ -55,7 +55,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         FoundationModelService.shared.prewarm()
 
         // Show on first launch so the user sees the app immediately.
-        PanelController.shared.show()
+        // Suppressed under XCTest: the unit/integration tests use Linter.app
+        // as a test host, so without this gate every `xcodebuild test`
+        // summons the floating panel — the dim material + drop shadow read
+        // as the screen briefly going dark. The host process's `userInfo`
+        // dictionary contains `XCTestConfigurationFilePath` only during a
+        // test run, never in normal launches.
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
+            PanelController.shared.show()
+        }
     }
 }
 

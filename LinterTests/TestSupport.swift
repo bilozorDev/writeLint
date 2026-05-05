@@ -1,5 +1,5 @@
 import Foundation
-@testable import Linter
+@testable import Write_Lint
 
 /// Test-only helper: walk a `[DiffOp]` and reconstruct the `corrected` string
 /// from the original. Used by `DiffTests` to assert the LCS-reconstruction

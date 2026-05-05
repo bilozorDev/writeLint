@@ -28,9 +28,9 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
-		EAEE39DD2FA3C63A00B42104 /* Linter.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Linter.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		EAEE3AE52FA53CDF00B42104 /* LinterTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LinterTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		EAEE3AF22FA53CFB00B42104 /* LinterUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LinterUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		EAEE39DD2FA3C63A00B42104 /* Write Lint.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Write Lint.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		EAEE3AE52FA53CDF00B42104 /* Write LintTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Write LintTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
+		EAEE3AF22FA53CFB00B42104 /* Write LintUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Write LintUITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -90,9 +90,9 @@
 		EAEE39DE2FA3C63A00B42104 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				EAEE39DD2FA3C63A00B42104 /* Linter.app */,
-				EAEE3AE52FA53CDF00B42104 /* LinterTests.xctest */,
-				EAEE3AF22FA53CFB00B42104 /* LinterUITests.xctest */,
+				EAEE39DD2FA3C63A00B42104 /* Write Lint.app */,
+				EAEE3AE52FA53CDF00B42104 /* Write LintTests.xctest */,
+				EAEE3AF22FA53CFB00B42104 /* Write LintUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -100,9 +100,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		EAEE39DC2FA3C63A00B42104 /* Linter */ = {
+		EAEE39DC2FA3C63A00B42104 /* Write Lint */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = EAEE39E82FA3C63B00B42104 /* Build configuration list for PBXNativeTarget "Linter" */;
+			buildConfigurationList = EAEE39E82FA3C63B00B42104 /* Build configuration list for PBXNativeTarget "Write Lint" */;
 			buildPhases = (
 				EAEE39D92FA3C63A00B42104 /* Sources */,
 				EAEE39DA2FA3C63A00B42104 /* Frameworks */,
@@ -115,16 +115,16 @@
 			fileSystemSynchronizedGroups = (
 				EAEE39DF2FA3C63A00B42104 /* Linter */,
 			);
-			name = Linter;
+			name = "Write Lint";
 			packageProductDependencies = (
 			);
 			productName = Linter;
-			productReference = EAEE39DD2FA3C63A00B42104 /* Linter.app */;
+			productReference = EAEE39DD2FA3C63A00B42104 /* Write Lint.app */;
 			productType = "com.apple.product-type.application";
 		};
-		EAEE3AE42FA53CDF00B42104 /* LinterTests */ = {
+		EAEE3AE42FA53CDF00B42104 /* Write LintTests */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = EAEE3AED2FA53CDF00B42104 /* Build configuration list for PBXNativeTarget "LinterTests" */;
+			buildConfigurationList = EAEE3AED2FA53CDF00B42104 /* Build configuration list for PBXNativeTarget "Write LintTests" */;
 			buildPhases = (
 				EAEE3AE12FA53CDF00B42104 /* Sources */,
 				EAEE3AE22FA53CDF00B42104 /* Frameworks */,
@@ -138,17 +138,17 @@
 			fileSystemSynchronizedGroups = (
 				EAEE3AE62FA53CDF00B42104 /* LinterTests */,
 			);
-			name = LinterTests;
+			name = "Write LintTests";
 			packageProductDependencies = (
 				EAEE3AFE2FA53D9200B42104 /* SnapshotTesting */,
 			);
 			productName = LinterTests;
-			productReference = EAEE3AE52FA53CDF00B42104 /* LinterTests.xctest */;
+			productReference = EAEE3AE52FA53CDF00B42104 /* Write LintTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
-		EAEE3AF12FA53CFB00B42104 /* LinterUITests */ = {
+		EAEE3AF12FA53CFB00B42104 /* Write LintUITests */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = EAEE3AFA2FA53CFB00B42104 /* Build configuration list for PBXNativeTarget "LinterUITests" */;
+			buildConfigurationList = EAEE3AFA2FA53CFB00B42104 /* Build configuration list for PBXNativeTarget "Write LintUITests" */;
 			buildPhases = (
 				EAEE3AEE2FA53CFB00B42104 /* Sources */,
 				EAEE3AEF2FA53CFB00B42104 /* Frameworks */,
@@ -162,11 +162,11 @@
 			fileSystemSynchronizedGroups = (
 				EAEE3AF32FA53CFB00B42104 /* LinterUITests */,
 			);
-			name = LinterUITests;
+			name = "Write LintUITests";
 			packageProductDependencies = (
 			);
 			productName = LinterUITests;
-			productReference = EAEE3AF22FA53CFB00B42104 /* LinterUITests.xctest */;
+			productReference = EAEE3AF22FA53CFB00B42104 /* Write LintUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
 		};
 /* End PBXNativeTarget section */
@@ -192,7 +192,7 @@
 					};
 				};
 			};
-			buildConfigurationList = EAEE39D82FA3C63A00B42104 /* Build configuration list for PBXProject "Linter" */;
+			buildConfigurationList = EAEE39D82FA3C63A00B42104 /* Build configuration list for PBXProject "Write Lint" */;
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -209,9 +209,9 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				EAEE39DC2FA3C63A00B42104 /* Linter */,
-				EAEE3AE42FA53CDF00B42104 /* LinterTests */,
-				EAEE3AF12FA53CFB00B42104 /* LinterUITests */,
+				EAEE39DC2FA3C63A00B42104 /* Write Lint */,
+				EAEE3AE42FA53CDF00B42104 /* Write LintTests */,
+				EAEE3AF12FA53CFB00B42104 /* Write LintUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -267,12 +267,12 @@
 /* Begin PBXTargetDependency section */
 		EAEE3AEA2FA53CDF00B42104 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
-			target = EAEE39DC2FA3C63A00B42104 /* Linter */;
+			target = EAEE39DC2FA3C63A00B42104 /* Write Lint */;
 			targetProxy = EAEE3AE92FA53CDF00B42104 /* PBXContainerItemProxy */;
 		};
 		EAEE3AF92FA53CFB00B42104 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
-			target = EAEE39DC2FA3C63A00B42104 /* Linter */;
+			target = EAEE39DC2FA3C63A00B42104 /* Write Lint */;
 			targetProxy = EAEE3AF82FA53CFB00B42104 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
@@ -404,11 +404,12 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Linter/Linter.entitlements;
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = J7F9MRA4G4;
-				ENABLE_APP_SANDBOX = YES;
+				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -421,7 +422,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = Hexaget.WriteLint;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -439,9 +440,10 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Linter/Linter.entitlements;
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = J7F9MRA4G4;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -456,7 +458,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = Hexaget.WriteLint;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -473,10 +475,10 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = J7F9MRA4G4;
 				GENERATE_INFOPLIST_FILE = YES;
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = Hexaget.LinterTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
@@ -484,7 +486,7 @@
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Linter.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Linter";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Write Lint.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Write Lint";
 			};
 			name = Debug;
 		};
@@ -493,10 +495,10 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = J7F9MRA4G4;
 				GENERATE_INFOPLIST_FILE = YES;
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = Hexaget.LinterTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
@@ -504,7 +506,7 @@
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Linter.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Linter";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Write Lint.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Write Lint";
 			};
 			name = Release;
 		};
@@ -512,10 +514,10 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = J7F9MRA4G4;
 				GENERATE_INFOPLIST_FILE = YES;
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = Hexaget.LinterUITests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
@@ -531,10 +533,10 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = J7F9MRA4G4;
 				GENERATE_INFOPLIST_FILE = YES;
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = Hexaget.LinterUITests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
@@ -549,7 +551,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		EAEE39D82FA3C63A00B42104 /* Build configuration list for PBXProject "Linter" */ = {
+		EAEE39D82FA3C63A00B42104 /* Build configuration list for PBXProject "Write Lint" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				EAEE39E62FA3C63B00B42104 /* Debug */,
@@ -558,7 +560,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		EAEE39E82FA3C63B00B42104 /* Build configuration list for PBXNativeTarget "Linter" */ = {
+		EAEE39E82FA3C63B00B42104 /* Build configuration list for PBXNativeTarget "Write Lint" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				EAEE39E92FA3C63B00B42104 /* Debug */,
@@ -567,7 +569,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		EAEE3AED2FA53CDF00B42104 /* Build configuration list for PBXNativeTarget "LinterTests" */ = {
+		EAEE3AED2FA53CDF00B42104 /* Build configuration list for PBXNativeTarget "Write LintTests" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				EAEE3AEB2FA53CDF00B42104 /* Debug */,
@@ -576,7 +578,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		EAEE3AFA2FA53CFB00B42104 /* Build configuration list for PBXNativeTarget "LinterUITests" */ = {
+		EAEE3AFA2FA53CFB00B42104 /* Build configuration list for PBXNativeTarget "Write LintUITests" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				EAEE3AFB2FA53CFB00B42104 /* Debug */,

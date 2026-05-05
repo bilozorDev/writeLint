@@ -1,5 +1,5 @@
 import Testing
-@testable import Linter
+@testable import Write_Lint
 
 @Suite("LintIssue.upgrade — priority-aware merge across multi-chunk fallbacks")
 struct LintIssueTests {
