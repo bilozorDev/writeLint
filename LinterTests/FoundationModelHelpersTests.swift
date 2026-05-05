@@ -1,5 +1,5 @@
 import Testing
-@testable import Linter
+@testable import Write_Lint
 
 @Suite("FoundationModelService pure helpers — chunking, hallucination guard, log quoting")
 @MainActor

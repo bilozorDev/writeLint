@@ -71,7 +71,13 @@ struct DiffView: View {
                 attr.append(seg)
             case .insert where filter == .corrected:
                 var seg = AttributedString(op.text)
-                seg.foregroundColor = NSColor(Color(hex: "#1A8C3E"))
+                // Mode-adaptive green: the dark forest tone (#1A8C3E) reads
+                // well against light surfaces but vanishes against the
+                // panel's dark material in dark mode. Use the bright
+                // Palette.added (#30D158) in dark mode where it has real
+                // contrast. The removed-side color stays Palette.removed
+                // because that hue is already vivid in both modes.
+                seg.foregroundColor = NSColor(dark ? Palette.added : Color(hex: "#1A8C3E"))
                 // The green color is enough emphasis; setting NSFont here
                 // would warn under strict concurrency (NSFont not Sendable).
                 attr.append(seg)

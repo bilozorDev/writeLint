@@ -34,6 +34,11 @@ enum ModelAvailability: Equatable {
 }
 
 struct LintResult {
+    /// The exact text the user submitted. Stored on the result so the UI
+    /// has it on hand without threading a separate variable through accept
+    /// handlers — used by `handleAccept` to record the original alongside
+    /// the polished output in `PromptHistory`.
+    var input: String
     var output: String
     var ops: [DiffOp]
     var stats: (added: Int, removed: Int)
@@ -136,11 +141,23 @@ struct LintOutput {
     let output: String
 }
 
+/// Selects which model path `FoundationModelService.lint` runs. Constructed
+/// at the UI layer (`LinterWindow.submit`) by reading `PromptStore` —
+/// keeping the choice in one place at the call site rather than reaching
+/// into the store from inside the service.
+enum BackendChoice {
+    case onDevice
+    case claude(apiKey: String, model: ClaudeModel)
+    case openai(apiKey: String, model: OpenAIModel)
+}
+
 @MainActor
 final class FoundationModelService {
     static let shared = FoundationModelService()
 
     private let model = SystemLanguageModel.default
+    private let claude = ClaudeBackend()
+    private let openai = OpenAIBackend()
 
     var availability: ModelAvailability {
         switch model.availability {
@@ -208,7 +225,40 @@ final class FoundationModelService {
     /// no schema-side hints layered on top. Examples (if any) live inside
     /// the instructions text so they're visible to the user in Advanced
     /// Mode.
-    func lint(text: String, instructions: String) async throws -> LintResult {
+    ///
+    /// `backend` controls which model path runs. Default `.onDevice`
+    /// preserves the existing call site signature; the UI passes `.claude`
+    /// when the user has opted in via Settings (Advanced Mode + key
+    /// present).
+    func lint(
+        text: String,
+        instructions: String,
+        backend: BackendChoice = .onDevice
+    ) async throws -> LintResult {
+        switch backend {
+        case .onDevice:
+            return try await lintOnDevice(text: text, instructions: instructions)
+        case .claude(let apiKey, let model):
+            return try await claude.lint(
+                text: text,
+                instructions: instructions,
+                apiKey: apiKey,
+                model: model
+            )
+        case .openai(let apiKey, let model):
+            return try await openai.lint(
+                text: text,
+                instructions: instructions,
+                apiKey: apiKey,
+                model: model
+            )
+        }
+    }
+
+    /// On-device path. Extracted from `lint(text:instructions:)` so the
+    /// router stays a thin two-case switch and the cloud path lives next to
+    /// it as a sibling method.
+    private func lintOnDevice(text: String, instructions: String) async throws -> LintResult {
         guard case .available = availability else {
             if case .unavailable(let reason, _) = availability {
                 lintLog.error("model unavailable: \(reason, privacy: .public)")
@@ -337,7 +387,7 @@ final class FoundationModelService {
                     throw error
                 }
                 let polished = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-                let cleaned = stripWrappingQuotes(polished)
+                let cleaned = Self.stripWrappingQuotes(polished)
                 lintLog.notice("chunk \(i): raw=\(Self.quoteForLog(raw), privacy: .private)")
                 if cleaned != polished {
                     lintLog.notice("chunk \(i): stripped wrapping quotes")
@@ -373,7 +423,7 @@ final class FoundationModelService {
             let stats = Diff.countChanges(ops)
             let issueTag: String = currentIssue.map { " issue=\(String(describing: $0))" } ?? ""
             lintLog.notice("─── lint done: latency=\(latencyMs)ms +\(stats.added)/-\(stats.removed) words\(issueTag, privacy: .public), final=\(Self.quoteForLog(output), privacy: .private)")
-            return LintResult(output: output, ops: ops, stats: stats, latencyMs: latencyMs, issue: currentIssue)
+            return LintResult(input: text, output: output, ops: ops, stats: stats, latencyMs: latencyMs, issue: currentIssue)
         } catch is CancellationError {
             lintLog.notice("lint cancelled")
             throw LintError.cancelled
@@ -452,7 +502,18 @@ final class FoundationModelService {
     ///      regurgitates fragments of its own response-format directive
     ///      (e.g. trailing "response format in json.") inside the polished
     ///      string. Reject any output that introduces those phrases.
-    static func hallucinationReason(input: String, output: String) -> HallucinationReason? {
+    ///
+    /// `includeWordCountChecks` is `true` for the on-device model where the
+    /// 0.8×–1.3× envelope is calibrated to its GEC failure mode. The Claude
+    /// path passes `false`: Claude rewrites more freely (and that freedom is
+    /// usually *why* a user opted in), so the length envelope would trip on
+    /// legitimate output. Parens and leaked-phrase guards stay in both
+    /// paths — those catch real, model-agnostic failure modes.
+    static func hallucinationReason(
+        input: String,
+        output: String,
+        includeWordCountChecks: Bool = true
+    ) -> HallucinationReason? {
         // 1. Parens in output that weren't in input.
         if output.contains("(") && !input.contains("(") {
             return .addedParens
@@ -473,16 +534,18 @@ final class FoundationModelService {
         //      book.") don't add more than a couple of words.
         //    Lower bound (shrinkage): ≥8 words to leave room for duplicate
         //    removal ("the the" → "the") on shorter inputs.
-        let inputWords = input.split(whereSeparator: { $0.isWhitespace }).count
-        let outputWords = output.split(whereSeparator: { $0.isWhitespace }).count
-        if inputWords >= 5, Double(outputWords) > Double(inputWords) * 1.3 {
-            return .wordCountExpansion(input: inputWords, output: outputWords)
-        }
-        if inputWords < 5, outputWords > inputWords + 3 {
-            return .wordCountExpansion(input: inputWords, output: outputWords)
-        }
-        if inputWords >= 8, Double(outputWords) < Double(inputWords) * 0.8 {
-            return .wordCountShrinkage(input: inputWords, output: outputWords)
+        if includeWordCountChecks {
+            let inputWords = input.split(whereSeparator: { $0.isWhitespace }).count
+            let outputWords = output.split(whereSeparator: { $0.isWhitespace }).count
+            if inputWords >= 5, Double(outputWords) > Double(inputWords) * 1.3 {
+                return .wordCountExpansion(input: inputWords, output: outputWords)
+            }
+            if inputWords < 5, outputWords > inputWords + 3 {
+                return .wordCountExpansion(input: inputWords, output: outputWords)
+            }
+            if inputWords >= 8, Double(outputWords) < Double(inputWords) * 0.8 {
+                return .wordCountShrinkage(input: inputWords, output: outputWords)
+            }
         }
 
         // 3. Schema/instruction leakage. These are phrases the user almost
@@ -577,7 +640,7 @@ final class FoundationModelService {
         return chunks
     }
 
-    private func stripWrappingQuotes(_ s: String) -> String {
+    static func stripWrappingQuotes(_ s: String) -> String {
         guard s.count >= 2 else { return s }
         let first = s.first!, last = s.last!
         let pairs: [(Character, Character)] = [("\"", "\""), ("\u{201C}", "\u{201D}"), ("'", "'"), ("`", "`")]

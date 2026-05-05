@@ -9,6 +9,11 @@ struct LinterWindow: View {
     @State private var text: String = ""
     @State private var settingsOpen = false
     @State private var historyOpen = false
+    /// Non-nil when the user clicked a history entry to view its diff.
+    /// Drives a swap from the list view to `HistoryDetailView` while
+    /// `historyOpen` stays true (the back button just nils this out and
+    /// returns to the list).
+    @State private var viewingHistoryEntry: PromptEntry?
     @State private var thinking = false
     @State private var result: LintResult?
     @State private var copied = false
@@ -134,6 +139,7 @@ struct LinterWindow: View {
                 settingsOpen = false
                 slideOffset = 0
                 historyOpen = false
+                viewingHistoryEntry = nil
                 cancelLint()
             }
         }
@@ -143,10 +149,19 @@ struct LinterWindow: View {
                 onSubmit: { submit() },
                 onHistory: {
                     setSettingsOpen(false)
+                    // Always reset the detail view when toggling history
+                    // — re-opening should land on the list, not stay
+                    // pinned to the previously-viewed entry.
+                    viewingHistoryEntry = nil
                     historyOpen.toggle()
                 },
                 onEscape: {
-                    if historyOpen { historyOpen = false }
+                    // Cascade Esc: detail-view → history list → close
+                    // history → close settings → dismiss result → hide
+                    // panel. Each level peels off the most recently
+                    // surfaced overlay.
+                    if viewingHistoryEntry != nil { viewingHistoryEntry = nil }
+                    else if historyOpen { historyOpen = false }
                     else if settingsOpen { setSettingsOpen(false) }
                     else if result != nil { result = nil }
                     else { PanelController.shared.hide() }
@@ -167,22 +182,47 @@ struct LinterWindow: View {
                 onToggleSettings: { setSettingsOpen(!settingsOpen) }
             )
 
-            if case .unavailable(let reason, let installing) = availability {
+            // Only surface the on-device-unavailable bar when the on-device
+            // backend is actually the active one. With Claude selected, the
+            // user has a working backend and Apple Intelligence's state is
+            // irrelevant for the in-panel UX.
+            if store.activeBackend == .onDevice,
+               case .unavailable(let reason, let installing) = availability {
                 InlineErrorBar(message: reason, isInstalling: installing, dark: dark)
             }
 
             if historyOpen {
-                HistoryView(
-                    entries: history.entries,
-                    dark: dark,
-                    onPick: { entry in
-                        text = entry.text
-                        historyOpen = false
-                        result = nil
-                    },
-                    onClear: { history.clear() },
-                    onClose: { historyOpen = false }
-                )
+                if let entry = viewingHistoryEntry {
+                    HistoryDetailView(
+                        entry: entry,
+                        dark: dark,
+                        onBack: { viewingHistoryEntry = nil },
+                        onUseAgain: {
+                            text = entry.original
+                            viewingHistoryEntry = nil
+                            historyOpen = false
+                            result = nil
+                            inputFocused = true
+                        }
+                    )
+                } else {
+                    HistoryView(
+                        entries: history.entries,
+                        dark: dark,
+                        onPick: { entry in
+                            // Click on a row now opens the read-only diff
+                            // for that entry; the "Use again" button inside
+                            // the detail view handles the load-into-input
+                            // path that this callback used to perform.
+                            viewingHistoryEntry = entry
+                        },
+                        onClear: { history.clear() },
+                        onClose: {
+                            historyOpen = false
+                            viewingHistoryEntry = nil
+                        }
+                    )
+                }
             } else if thinking {
                 ThinkingBar(dark: dark)
             } else if let r = result {
@@ -195,6 +235,7 @@ struct LinterWindow: View {
                         IssueBar(
                             issue: issue,
                             latencyMs: r.latencyMs,
+                            store: store,
                             dark: dark,
                             onDismiss: { result = nil }
                         )
@@ -202,6 +243,7 @@ struct LinterWindow: View {
                         CleanBar(
                             latencyMs: r.latencyMs,
                             copied: copied,
+                            store: store,
                             dark: dark,
                             onCopy: handleCopy
                         )
@@ -227,6 +269,7 @@ struct LinterWindow: View {
                         stats: r.stats,
                         latencyMs: r.latencyMs,
                         copied: copied,
+                        store: store,
                         dark: dark,
                         onCopy: handleCopy,
                         onReject: { result = nil },
@@ -234,8 +277,28 @@ struct LinterWindow: View {
                     )
                 }
             } else {
-                FooterHint(dark: dark, hotkey: HotkeyStore.shared.current)
+                FooterHint(
+                    dark: dark,
+                    hotkey: HotkeyStore.shared.current,
+                    store: store
+                )
             }
+        }
+    }
+
+    /// Compact backend identifier persisted into history when a lint is
+    /// accepted. Used only by `handleAccept` now — the per-result bars
+    /// and footer render their own labels via `BackendBadge` driven
+    /// directly off the store. Reading "what model did this run on" from
+    /// history later requires this string to be human-readable.
+    private var backendLabel: String {
+        switch store.activeBackend {
+        case .onDevice:
+            return "on-device"
+        case .claude:
+            return "Claude · \(store.selectedClaudeModel.footerLabel)"
+        case .openai:
+            return "OpenAI · \(store.selectedOpenAIModel.footerLabel)"
         }
     }
 
@@ -328,9 +391,32 @@ struct LinterWindow: View {
             showToast("Text is too long (max \(Self.maxInputCharacters.formatted()) characters).")
             return
         }
-        guard case .available = availability else { return }
+        // The on-device-availability gate only applies when on-device is
+        // the active backend. If the user has opted into a cloud provider
+        // in Advanced Mode, we proceed regardless of Apple Intelligence's
+        // state — the cloud path doesn't depend on it.
+        let backend: BackendChoice = {
+            switch store.activeBackend {
+            case .claude:
+                if let key = store.currentClaudeKey() {
+                    return .claude(apiKey: key, model: store.selectedClaudeModel)
+                }
+            case .openai:
+                if let key = store.currentOpenAIKey() {
+                    return .openai(apiKey: key, model: store.selectedOpenAIModel)
+                }
+            case .onDevice:
+                break
+            }
+            return .onDevice
+        }()
+        if case .onDevice = backend {
+            guard case .available = availability else { return }
+        }
         cancelLint()
-        history.record(text: text)
+        // History capture moved to handleAccept — we only persist lints the
+        // user actually accepted, with the polished output and backend
+        // label alongside the original.
         submittedThisSession = true
         let instructions = store.instructions
         let toLint = text
@@ -339,7 +425,11 @@ struct LinterWindow: View {
         copied = false
         lintTask = Task {
             do {
-                let r = try await FoundationModelService.shared.lint(text: toLint, instructions: instructions)
+                let r = try await FoundationModelService.shared.lint(
+                    text: toLint,
+                    instructions: instructions,
+                    backend: backend
+                )
                 if Task.isCancelled { return }
                 await MainActor.run {
                     self.thinking = false
@@ -384,6 +474,15 @@ struct LinterWindow: View {
         pb.clearContents()
         pb.setString(r.output, forType: .string)
 
+        // Record this lint in history. Capturing on accept (not on submit)
+        // gives us both sides of the diff and means history reflects only
+        // the polishes the user actually used.
+        history.recordAccepted(
+            original: r.input,
+            polished: r.output,
+            backendLabel: backendLabel
+        )
+
         if autoHide {
             // Replace the input text so the next summon shows the accepted
             // version, then dismiss after the toast briefly shows. One timer
@@ -394,6 +493,12 @@ struct LinterWindow: View {
             // freshly-opened session's state.
             text = r.output
             result = nil
+            // Resign focus immediately so the input field stops accepting
+            // keystrokes during the ~850ms toast window before the panel
+            // actually hides. Without this, a user who keeps typing after
+            // ⌘⏎ would be editing text that's about to disappear — visibly
+            // confusing, and any keystrokes are wasted work.
+            inputFocused = false
             toast = "Copied to clipboard"
             let stamp = PanelController.shared.sessionStamp
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.85) {
@@ -418,6 +523,145 @@ struct LinterWindow: View {
     }
 }
 
+/// Backend identifier rendered into the footer + per-result bars. When
+/// only on-device is reachable, it's a static label. When at least one
+/// cloud backend has a saved API key, it becomes a `Menu` so the user can
+/// switch backends inline. **Switches the backend, not the model** —
+/// model picking lives in Settings alongside the API key entry. Reaching
+/// for "different backend" (on-device ↔ Claude ↔ OpenAI) is a foreground
+/// decision; reaching for "different model within Claude" is a
+/// configuration step.
+///
+/// Available options in the dropdown:
+/// - On-device — always shown
+/// - Claude · &lt;current model&gt; — only if `hasClaudeKey`
+/// - OpenAI · &lt;current model&gt; — only if `hasOpenAIKey`
+///
+/// Two visual styles for the trigger:
+/// - `.compact` — `"Claude · Haiku 4.5"` / `"on-device"`. Used in the
+///   per-result bars where space is at a premium and the provider is
+///   disambiguated by the cloud glyph.
+/// - `.privacyFramed` — `"Cloud · Haiku 4.5"` / `"Private · on-device"`.
+///   Used in `FooterHint` where the message frames the privacy posture
+///   rather than the brand.
+struct BackendBadge: View {
+    enum Style { case compact, privacyFramed }
+    @Bindable var store: PromptStore
+    let style: Style
+    let dark: Bool
+
+    /// Backends the user can pick right now. On-device is always present;
+    /// cloud options appear only when the matching key is in the
+    /// Keychain. The dropdown disappears entirely (collapses to a static
+    /// label) when only on-device is available, so the user isn't asked
+    /// to "pick" from a list of one.
+    private var availableBackends: [LintBackend] {
+        var out: [LintBackend] = [.onDevice]
+        if store.hasClaudeKey { out.append(.claude) }
+        if store.hasOpenAIKey { out.append(.openai) }
+        return out
+    }
+
+    private var glyph: String {
+        switch (store.activeBackend, style) {
+        case (.onDevice, .compact):       return "apple.logo"
+        case (.onDevice, .privacyFramed): return "lock.fill"
+        case (.claude, _), (.openai, _):  return "cloud"
+        }
+    }
+
+    private var labelText: String {
+        switch (store.activeBackend, style) {
+        case (.onDevice, .compact):       return "on-device"
+        case (.onDevice, .privacyFramed): return "Private · on-device"
+        case (.claude, .compact):
+            return "Claude · \(store.selectedClaudeModel.footerLabel)"
+        case (.claude, .privacyFramed):
+            return "Cloud · \(store.selectedClaudeModel.footerLabel)"
+        case (.openai, .compact):
+            return "OpenAI · \(store.selectedOpenAIModel.footerLabel)"
+        case (.openai, .privacyFramed):
+            return "Cloud · \(store.selectedOpenAIModel.footerLabel)"
+        }
+    }
+
+    /// Label shown for each row inside the popped-open menu. Always the
+    /// brand-prefixed form (`"Claude · Haiku 4.5"`) regardless of the
+    /// trigger's style — inside the menu the user is choosing among
+    /// backends, so brand framing is what they want to see.
+    private func menuOptionLabel(for backend: LintBackend) -> String {
+        switch backend {
+        case .onDevice: return "On-device"
+        case .claude:   return "Claude · \(store.selectedClaudeModel.footerLabel)"
+        case .openai:   return "OpenAI · \(store.selectedOpenAIModel.footerLabel)"
+        }
+    }
+
+    var body: some View {
+        if availableBackends.count > 1 {
+            backendMenu
+        } else {
+            staticLabel
+        }
+    }
+
+    private var staticLabel: some View {
+        HStack(spacing: 3) {
+            Image(systemName: glyph).font(.system(size: 10))
+            Text(labelText).font(.system(size: 11))
+        }
+        .foregroundStyle(Palette.sub(dark))
+    }
+
+    private var backendMenu: some View {
+        Menu {
+            // Plain `Button`s instead of a `Picker` — wrapping a Picker
+            // (even with `.pickerStyle(.inline)` and an empty title)
+            // makes macOS reserve a header row for the title slot, which
+            // shows up as an awkward blank gap above the first option.
+            // Buttons render flush with the menu's top edge and let us
+            // control the checkmark explicitly.
+            ForEach(availableBackends) { backend in
+                Button {
+                    store.selectedBackend = backend
+                } label: {
+                    if store.selectedBackend == backend {
+                        Label(menuOptionLabel(for: backend), systemImage: "checkmark")
+                    } else {
+                        Text(menuOptionLabel(for: backend))
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: glyph).font(.system(size: 10))
+                Text(labelText).font(.system(size: 11))
+                // Caret signals "click to open". `chevron.down` at 9pt
+                // semibold is the smallest size that reads as a clear
+                // dropdown indicator at the surrounding text size — any
+                // smaller and it disappears; any bigger and it competes
+                // with the model name.
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
+            }
+        }
+        // `.button` (default) menu style without the system indicator
+        // gives us a plain clickable trigger. Avoiding `.borderlessButton`
+        // here — that style aggressively styles the label and was
+        // suppressing the trailing chevron in the rendered output.
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        // `.foregroundStyle` *inside* the label loses to the menu's
+        // tint chrome — the label can render in the system accent
+        // color (blue) instead of the surrounding gray. Lifting both
+        // `.foregroundStyle` AND `.tint` to the Menu level wins; their
+        // precedence on macOS Menu is version-sensitive, so set both.
+        .foregroundStyle(Palette.sub(dark))
+        .tint(Palette.sub(dark))
+    }
+}
+
 /// Compact "no changes needed" bar shown in place of the diff view when the
 /// model returns the input unchanged. Stays visible until the user dismisses
 /// (Esc / click-away) — no Accept/Reject because there's nothing to commit.
@@ -425,6 +669,7 @@ struct LinterWindow: View {
 private struct CleanBar: View {
     let latencyMs: Int
     let copied: Bool
+    @Bindable var store: PromptStore
     let dark: Bool
     let onCopy: () -> Void
 
@@ -451,11 +696,7 @@ private struct CleanBar: View {
                 Text("\(latencyMs)ms")
                     .font(.system(size: 11))
                     .foregroundStyle(Palette.sub(dark))
-                HStack(spacing: 3) {
-                    Image(systemName: "apple.logo").font(.system(size: 10))
-                    Text("on-device").font(.system(size: 11))
-                }
-                .foregroundStyle(Palette.sub(dark))
+                BackendBadge(store: store, style: .compact, dark: dark)
             }
             Button(action: onCopy) {
                 HStack(spacing: 5) {
@@ -490,6 +731,7 @@ private struct CleanBar: View {
 private struct IssueBar: View {
     let issue: LintIssue
     let latencyMs: Int
+    @Bindable var store: PromptStore
     let dark: Bool
     let onDismiss: () -> Void
 
@@ -518,11 +760,7 @@ private struct IssueBar: View {
                 Text("\(latencyMs)ms")
                     .font(.system(size: 11))
                     .foregroundStyle(Palette.sub(dark))
-                HStack(spacing: 3) {
-                    Image(systemName: "apple.logo").font(.system(size: 10))
-                    Text("on-device").font(.system(size: 11))
-                }
-                .foregroundStyle(Palette.sub(dark))
+                BackendBadge(store: store, style: .compact, dark: dark)
             }
             Button(action: onDismiss) {
                 Text("Dismiss")
@@ -594,6 +832,7 @@ private struct ToastView: View {
 private struct FooterHint: View {
     let dark: Bool
     let hotkey: Hotkey
+    @Bindable var store: PromptStore
     var body: some View {
         HStack(spacing: 14) {
             HStack(spacing: 5) {
@@ -610,8 +849,12 @@ private struct FooterHint: View {
             HStack(spacing: 5) {
                 Text("AI makes mistakes, always check results")
                 Text("·")
-                Image(systemName: "lock.fill").font(.system(size: 10))
-                Text("Private · on-device")
+                // BackendBadge renders the lock/cloud glyph + privacy
+                // framing ("Private · on-device" / "Cloud · Haiku 4.5"),
+                // and on cloud backends becomes a clickable model picker
+                // so the user can switch models without leaving the
+                // panel.
+                BackendBadge(store: store, style: .privacyFramed, dark: dark)
             }
         }
         .font(.system(size: 11))

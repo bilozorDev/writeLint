@@ -1,6 +1,6 @@
 import Testing
 import Carbon.HIToolbox
-@testable import Linter
+@testable import Write_Lint
 
 @Suite("Hotkey.validationError — chord rule layer (no Carbon side effects)")
 @MainActor

@@ -1,6 +1,6 @@
 import Testing
 import Foundation
-@testable import Linter
+@testable import Write_Lint
 
 /// Integration tests that exercise the real on-device model. These are slow
 /// (100–500 ms per call) and non-deterministic. Each test gates on

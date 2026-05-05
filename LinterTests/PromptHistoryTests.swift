@@ -1,8 +1,8 @@
 import Testing
 import Foundation
-@testable import Linter
+@testable import Write_Lint
 
-@Suite("PromptHistory — recent-prompts list with dedup, trim, cap-to-10, legacy decode")
+@Suite("PromptHistory — recent-prompts list with dedup, trim, cap-to-10, v1→v2 wipe")
 @MainActor
 struct PromptHistoryTests {
 
@@ -17,21 +17,38 @@ struct PromptHistoryTests {
         let scratch = ScratchDefaults.make()
         defer { scratch.cleanup() }
         let h = PromptHistory(defaults: scratch.defaults)
-        h.record(text: "first")
-        h.record(text: "second")
-        #expect(h.entries.map(\.text) == ["second", "first"])
+        h.recordAccepted(original: "first", polished: "First.", backendLabel: "on-device")
+        h.recordAccepted(original: "second", polished: "Second.", backendLabel: "on-device")
+        #expect(h.entries.map(\.original) == ["second", "first"])
+    }
+
+    @Test func recordCapturesPolishedAndBackend() throws {
+        let scratch = ScratchDefaults.make()
+        defer { scratch.cleanup() }
+        let h = PromptHistory(defaults: scratch.defaults)
+        h.recordAccepted(
+            original: "helo world",
+            polished: "Hello, world.",
+            backendLabel: "Claude · Haiku 4.5"
+        )
+        let entry = try #require(h.entries.first)
+        #expect(entry.original == "helo world")
+        #expect(entry.polished == "Hello, world.")
+        #expect(entry.backendLabel == "Claude · Haiku 4.5")
     }
 
     @Test func recordSkipsExactDupOfMostRecent() {
         // Re-running the same input shouldn't pile up. Older identical entries
         // (e.g. "hi" → other → "hi") DO add a new row — this only dedups
-        // back-to-back duplicates.
+        // back-to-back duplicates. Dedup is on `original`, not `polished`,
+        // so the same original re-polished slightly differently still
+        // dedups (rare, but matches "the user submitted the same thing").
         let scratch = ScratchDefaults.make()
         defer { scratch.cleanup() }
         let h = PromptHistory(defaults: scratch.defaults)
-        h.record(text: "hi")
-        h.record(text: "hi")
-        h.record(text: "hi")
+        h.recordAccepted(original: "hi", polished: "Hi.", backendLabel: "on-device")
+        h.recordAccepted(original: "hi", polished: "Hi.", backendLabel: "on-device")
+        h.recordAccepted(original: "hi", polished: "Hi!", backendLabel: "on-device")
         #expect(h.entries.count == 1)
     }
 
@@ -39,17 +56,17 @@ struct PromptHistoryTests {
         let scratch = ScratchDefaults.make()
         defer { scratch.cleanup() }
         let h = PromptHistory(defaults: scratch.defaults)
-        h.record(text: "hello")
-        h.record(text: "  hello  ")  // same content after trim — should dedup
+        h.recordAccepted(original: "hello", polished: "Hello.", backendLabel: "on-device")
+        h.recordAccepted(original: "  hello  ", polished: "Hello.", backendLabel: "on-device")
         #expect(h.entries.count == 1)
-        #expect(h.entries[0].text == "hello")
+        #expect(h.entries[0].original == "hello")
     }
 
     @Test func recordIgnoresWhitespaceOnlyInput() {
         let scratch = ScratchDefaults.make()
         defer { scratch.cleanup() }
         let h = PromptHistory(defaults: scratch.defaults)
-        h.record(text: "   \n\t ")
+        h.recordAccepted(original: "   \n\t ", polished: "ignored", backendLabel: "on-device")
         #expect(h.entries.isEmpty)
     }
 
@@ -58,23 +75,25 @@ struct PromptHistoryTests {
         defer { scratch.cleanup() }
         let h = PromptHistory(defaults: scratch.defaults)
         for i in 1...12 {
-            h.record(text: "entry \(i)")
+            h.recordAccepted(
+                original: "entry \(i)",
+                polished: "Entry \(i).",
+                backendLabel: "on-device"
+            )
         }
         #expect(h.entries.count == 10)
-        // Most-recent first, so entries 12 and 3 are the ends.
-        #expect(h.entries.first?.text == "entry 12")
-        #expect(h.entries.last?.text == "entry 3")
+        #expect(h.entries.first?.original == "entry 12")
+        #expect(h.entries.last?.original == "entry 3")
     }
 
     @Test func clearEmptiesEntries() {
         let scratch = ScratchDefaults.make()
         defer { scratch.cleanup() }
         let h = PromptHistory(defaults: scratch.defaults)
-        h.record(text: "anything")
+        h.recordAccepted(original: "anything", polished: "Anything.", backendLabel: "on-device")
         #expect(h.entries.isEmpty == false)
         h.clear()
         #expect(h.entries.isEmpty)
-        // Clear persists — reloading sees empty.
         let reloaded = PromptHistory(defaults: scratch.defaults)
         #expect(reloaded.entries.isEmpty)
     }
@@ -84,21 +103,28 @@ struct PromptHistoryTests {
         defer { scratch.cleanup() }
         do {
             let h = PromptHistory(defaults: scratch.defaults)
-            h.record(text: "alpha")
-            h.record(text: "beta")
+            h.recordAccepted(original: "alpha", polished: "Alpha.", backendLabel: "on-device")
+            h.recordAccepted(
+                original: "beta",
+                polished: "Beta.",
+                backendLabel: "Claude · Haiku 4.5"
+            )
         }
         let h2 = PromptHistory(defaults: scratch.defaults)
-        #expect(h2.entries.map(\.text) == ["beta", "alpha"])
+        #expect(h2.entries.map(\.original) == ["beta", "alpha"])
+        // Backend label is part of the persisted shape — verify it
+        // round-trips so the detail view can show "what model was used"
+        // for a lint that happened across launches.
+        #expect(h2.entries.first?.backendLabel == "Claude · Haiku 4.5")
     }
 
-    // MARK: legacy `templateID` forward-compat
+    // MARK: v1 → v2 schema migration
 
-    @Test func decodesLegacyEntriesWithTemplateIDField() {
-        // Older builds stored each entry with an extra `templateID` field.
-        // JSONDecoder ignores unknown keys, so old data should decode cleanly
-        // into the slimmer `PromptEntry`. After load, the field is dropped on
-        // the next persist — verify by re-encoding and confirming `templateID`
-        // is absent in the round-tripped JSON.
+    @Test func legacyV1HistoryIsWipedAndKeyRemoved() {
+        // v1 entries only carried the original text — no polished output,
+        // no backend label. The detail view can't render a meaningful diff
+        // from that, so on first launch under v2 we drop the v1 data and
+        // remove the key. New entries land under `promptHistory.v2`.
         let scratch = ScratchDefaults.make()
         defer { scratch.cleanup() }
         let legacyJSON = """
@@ -111,35 +137,21 @@ struct PromptHistoryTests {
         """
         scratch.defaults.set(legacyJSON.data(using: .utf8)!, forKey: "promptHistory.v1")
         let h = PromptHistory(defaults: scratch.defaults)
-        #expect(h.entries.count == 1)
-        #expect(h.entries[0].text == "old entry one")
-        // Force a re-persist by adding then clearing.
-        h.record(text: "trigger")
-        h.clear()
-        h.record(text: "trigger")
-        let raw = scratch.defaults.data(forKey: "promptHistory.v1") ?? Data()
-        let str = String(data: raw, encoding: .utf8) ?? ""
-        #expect(str.contains("templateID") == false, "legacy field should be dropped on re-persist; got: \(str)")
+        #expect(h.entries.isEmpty)
+        // The legacy key is removed proactively so the prefs file doesn't
+        // carry stale data.
+        #expect(scratch.defaults.object(forKey: "promptHistory.v1") == nil)
     }
 
-    @Test func selfHealsWhitespaceInLegacyEntriesOnLoad() {
-        // Older builds didn't trim before persisting. Init detects untrimmed
-        // entries and re-persists trimmed versions, so the next session is
-        // clean.
+    @Test func newEntriesPersistUnderV2Key() {
+        // Sanity-check that the new key really is `v2` — guards against
+        // accidental key reverts that would silently lose data on next
+        // launch.
         let scratch = ScratchDefaults.make()
         defer { scratch.cleanup() }
-        let dirtyJSON = """
-        [
-          { "id": "22222222-2222-2222-2222-222222222222",
-            "text": "  surrounded by spaces  ",
-            "date": 770000000.0 }
-        ]
-        """
-        scratch.defaults.set(dirtyJSON.data(using: .utf8)!, forKey: "promptHistory.v1")
         let h = PromptHistory(defaults: scratch.defaults)
-        #expect(h.entries[0].text == "surrounded by spaces")
-        // Verify it persisted the trimmed value.
-        let h2 = PromptHistory(defaults: scratch.defaults)
-        #expect(h2.entries[0].text == "surrounded by spaces")
+        h.recordAccepted(original: "hello", polished: "Hello.", backendLabel: "on-device")
+        #expect(scratch.defaults.data(forKey: "promptHistory.v2") != nil)
+        #expect(scratch.defaults.data(forKey: "promptHistory.v1") == nil)
     }
 }

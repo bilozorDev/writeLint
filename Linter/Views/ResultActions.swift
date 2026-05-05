@@ -4,6 +4,7 @@ struct ResultActions: View {
     let stats: (added: Int, removed: Int)
     let latencyMs: Int
     let copied: Bool
+    @Bindable var store: PromptStore
     let dark: Bool
     let onCopy: () -> Void
     let onReject: () -> Void
@@ -17,11 +18,7 @@ struct ResultActions: View {
                 Text("· \(latencyMs)ms")
                     .font(.system(size: 11))
                     .foregroundStyle(Palette.sub(dark))
-                HStack(spacing: 3) {
-                    Image(systemName: "apple.logo").font(.system(size: 10))
-                    Text("on-device").font(.system(size: 11))
-                }
-                .foregroundStyle(Palette.sub(dark))
+                BackendBadge(store: store, style: .compact, dark: dark)
             }
             Spacer()
             Button(action: onCopy) {

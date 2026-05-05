@@ -2,33 +2,31 @@ import Testing
 import SwiftUI
 import AppKit
 import SnapshotTesting
-@testable import Linter
+@testable import Write_Lint
 
-/// SwiftUI snapshot tests. Reference images would live in
+/// SwiftUI snapshot tests. Reference images live in
 /// `LinterTests/__Snapshots__/` (the default `swift-snapshot-testing` path).
 ///
-/// **Currently disabled** — see suite trait below. The Linter app has
-/// `ENABLE_APP_SANDBOX = YES`, and the test bundle inherits that sandbox from
-/// the host app's process, so writes outside the sandbox container are
-/// blocked (including the source-tree `__Snapshots__/` directory). The
-/// `assertSnapshot` API exposes `file:` as `StaticString`, not `String`, so
-/// the snapshot directory cannot be redirected at runtime.
+/// Sandbox is disabled on the **Write Lint** target's Debug configuration
+/// only (Release stays sandboxed and ships unchanged), which lets the test
+/// bundle write reference PNGs into the source tree. The `assertSnapshot`
+/// API exposes `file:` as `StaticString`, so the snapshot directory can't
+/// be redirected at runtime — disabling sandbox is the only path.
 ///
-/// To enable: set `ENABLE_APP_SANDBOX = NO` on the **Linter** target's
-/// **Debug** configuration only (Release stays sandboxed and ships
-/// unchanged). After that, remove the `.disabled` trait below and run the
-/// suite once with `withSnapshotTesting(record: .missing) { ... }` wrapping
-/// each test, or set `SNAPSHOT_TESTING_RECORD=true` in the scheme's env, to
-/// generate the reference images. Then commit `LinterTests/__Snapshots__/`.
+/// Record mode: every call passes `record: .missing`. The first run writes
+/// any missing reference, subsequent runs verify against it. To
+/// intentionally re-record after a UI change, delete the matching
+/// `__Snapshots__/<name>.png` and run the suite once.
 ///
-/// Host-dependence: `swift-snapshot-testing` renders against the host's font
-/// metrics and Retina scale, so cross-machine drift is expected. Convention:
-/// first committer wins; others regenerate locally with `record: true` if a
-/// divergence is intentional. CI is pinned to arm64 for stability.
-@Suite(
-    "SwiftUI snapshots — InputRow, DiffView, ResultActions, etc.",
-    .disabled("App Sandbox blocks writes to LinterTests/__Snapshots__/. Disable sandbox on the Linter Debug build to enable.")
-)
+/// Host-dependence: `swift-snapshot-testing` renders against the host's
+/// font metrics and Retina scale, so references are pinned to whichever
+/// machine — and *display configuration* — recorded them. Plugging in /
+/// unplugging an external monitor between record and verify can flip the
+/// effective backing scale (1x ↔ 2x) and invalidate every reference.
+/// When that happens the fix is the same workflow as a deliberate UI
+/// change: delete the affected `__Snapshots__/<name>.png` files, run the
+/// suite once, commit. Single-developer project: not a serious concern.
+@Suite("SwiftUI snapshots — InputRow, DiffView, ResultActions, etc.")
 @MainActor
 struct SnapshotTests {
 
@@ -36,13 +34,47 @@ struct SnapshotTests {
 
     private static let pageWidth: CGFloat = 660
 
+    /// Build a `PromptStore` for snapshot test fixtures. With
+    /// `advancedMode == false` (the init default) the store's
+    /// `activeBackend` is `.onDevice`, which is what every snapshot
+    /// captures — these tests verify the on-device rendering path. Uses a
+    /// per-test isolated Keychain service so we never read the
+    /// developer's real saved keys (which would flip `hasClaudeKey` and
+    /// change the rendered Settings panel state).
+    private func snapshotStore() -> PromptStore {
+        let scratch = ScratchDefaults.make()
+        return PromptStore(
+            defaults: scratch.defaults,
+            keychainService: "linter.tests.snapshot.\(UUID().uuidString)",
+            claudeAccount: "snap-claude",
+            openaiAccount: "snap-openai"
+        )
+    }
+
     /// Wrap a SwiftUI view in an `NSHostingView` sized at the panel's
     /// canonical width so SnapshotTesting can render it via the macOS
     /// `NSView -> NSImage` strategy. Uses `.idealHeight()` semantics by
     /// laying out at the requested height; pass enough vertical space.
     private func host<V: View>(_ view: V, height: CGFloat, dark: Bool) -> NSView {
         let scheme: ColorScheme = dark ? .dark : .light
-        let wrapped = view.preferredColorScheme(scheme)
+        // Panel backdrop. Without this, views with translucent backgrounds
+        // (e.g. `Palette.footerBg = .black.opacity(0.18)`, or any unset
+        // background that defaults to clear) composite against the test
+        // runner's default white surface — which makes dark-mode snapshots
+        // look washed out and turns white text invisible. The real app
+        // sits on top of `.thickMaterial`, which renders as ~`#262626` in
+        // dark mode and ~`#ECECEC` in light. Using a flat solid in those
+        // tones gets us a close enough approximation for visual review,
+        // and snapshot determinism doesn't require pixel-exact material
+        // rendering.
+        let backdrop = dark
+            ? Color(.sRGB, red: 0.15, green: 0.15, blue: 0.16, opacity: 1)
+            : Color(.sRGB, red: 0.93, green: 0.93, blue: 0.93, opacity: 1)
+        let wrapped = ZStack {
+            backdrop
+            view
+        }
+        .preferredColorScheme(scheme)
         let host = NSHostingView(rootView: wrapped)
         host.frame = NSRect(x: 0, y: 0, width: Self.pageWidth, height: height)
         host.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
@@ -54,17 +86,17 @@ struct SnapshotTests {
 
     @Test func inputRowIdleLight() {
         let v = host(InputRowSnapshotHarness(text: "", dark: false), height: 80, dark: false)
-        assertSnapshot(of: v, as: .image, named: "input-row-idle-light")
+        assertSnapshot(of: v, as: .image, named: "input-row-idle-light", record: .missing)
     }
 
     @Test func inputRowIdleDark() {
         let v = host(InputRowSnapshotHarness(text: "", dark: true), height: 80, dark: true)
-        assertSnapshot(of: v, as: .image, named: "input-row-idle-dark")
+        assertSnapshot(of: v, as: .image, named: "input-row-idle-dark", record: .missing)
     }
 
     @Test func inputRowWithTextLight() {
         let v = host(InputRowSnapshotHarness(text: "i has went to the store", dark: false), height: 80, dark: false)
-        assertSnapshot(of: v, as: .image, named: "input-row-with-text-light")
+        assertSnapshot(of: v, as: .image, named: "input-row-with-text-light", record: .missing)
     }
 
     // MARK: DiffView — sample diff in both color schemes
@@ -75,7 +107,7 @@ struct SnapshotTests {
             "I have gone to the store yesterday."
         )
         let v = host(DiffView(ops: ops, dark: false), height: 220, dark: false)
-        assertSnapshot(of: v, as: .image, named: "diff-view-sample-light")
+        assertSnapshot(of: v, as: .image, named: "diff-view-sample-light", record: .missing)
     }
 
     @Test func diffViewSampleDark() {
@@ -84,7 +116,7 @@ struct SnapshotTests {
             "I have gone to the store yesterday."
         )
         let v = host(DiffView(ops: ops, dark: true), height: 220, dark: true)
-        assertSnapshot(of: v, as: .image, named: "diff-view-sample-dark")
+        assertSnapshot(of: v, as: .image, named: "diff-view-sample-dark", record: .missing)
     }
 
     // MARK: ResultActions — footer with stats + buttons
@@ -94,13 +126,14 @@ struct SnapshotTests {
             stats: (added: 3, removed: 1),
             latencyMs: 421,
             copied: false,
+            store: snapshotStore(),
             dark: false,
             onCopy: {},
             onReject: {},
             onAccept: {}
         )
         let v = host(view, height: 50, dark: false)
-        assertSnapshot(of: v, as: .image, named: "result-actions-light")
+        assertSnapshot(of: v, as: .image, named: "result-actions-light", record: .missing)
     }
 
     @Test func resultActionsDark() {
@@ -108,13 +141,14 @@ struct SnapshotTests {
             stats: (added: 3, removed: 1),
             latencyMs: 421,
             copied: false,
+            store: snapshotStore(),
             dark: true,
             onCopy: {},
             onReject: {},
             onAccept: {}
         )
         let v = host(view, height: 50, dark: true)
-        assertSnapshot(of: v, as: .image, named: "result-actions-dark")
+        assertSnapshot(of: v, as: .image, named: "result-actions-dark", record: .missing)
     }
 
     @Test func resultActionsAfterCopy() {
@@ -123,13 +157,14 @@ struct SnapshotTests {
             stats: (added: 3, removed: 1),
             latencyMs: 421,
             copied: true,
+            store: snapshotStore(),
             dark: false,
             onCopy: {},
             onReject: {},
             onAccept: {}
         )
         let v = host(view, height: 50, dark: false)
-        assertSnapshot(of: v, as: .image, named: "result-actions-copied")
+        assertSnapshot(of: v, as: .image, named: "result-actions-copied", record: .missing)
     }
 
     // MARK: SettingsPanel — advanced mode off vs on
@@ -141,7 +176,7 @@ struct SnapshotTests {
         store.advancedMode = false
         let view = SettingsPanelHarness(store: store, dark: false)
         let v = host(view, height: 300, dark: false)
-        assertSnapshot(of: v, as: .image, named: "settings-panel-advanced-off")
+        assertSnapshot(of: v, as: .image, named: "settings-panel-advanced-off", record: .missing)
     }
 
     @Test func settingsPanelAdvancedModeOn() {
@@ -154,7 +189,7 @@ struct SnapshotTests {
         store.advancedMode = true
         let view = SettingsPanelHarness(store: store, dark: false)
         let v = host(view, height: 540, dark: false)
-        assertSnapshot(of: v, as: .image, named: "settings-panel-advanced-on")
+        assertSnapshot(of: v, as: .image, named: "settings-panel-advanced-on", record: .missing)
     }
 
     // MARK: HistoryView — empty + populated
@@ -168,7 +203,7 @@ struct SnapshotTests {
             onClose: {}
         )
         let v = host(view, height: 100, dark: false)
-        assertSnapshot(of: v, as: .image, named: "history-empty")
+        assertSnapshot(of: v, as: .image, named: "history-empty", record: .missing)
     }
 
     @Test func historyViewPopulated() {
@@ -176,9 +211,27 @@ struct SnapshotTests {
         // mid-state. Use stable UUIDs and dates so the snapshot is reproducible
         // (otherwise re-rendering produces a fresh UUID each run).
         let entries = [
-            PromptEntry(id: UUID(uuidString: "11111111-1111-1111-1111-111111111111")!, text: "fix this typo", date: Date(timeIntervalSince1970: 770_000_000)),
-            PromptEntry(id: UUID(uuidString: "22222222-2222-2222-2222-222222222222")!, text: "make this more concise", date: Date(timeIntervalSince1970: 769_000_000)),
-            PromptEntry(id: UUID(uuidString: "33333333-3333-3333-3333-333333333333")!, text: "polish the greeting", date: Date(timeIntervalSince1970: 768_000_000)),
+            PromptEntry(
+                id: UUID(uuidString: "11111111-1111-1111-1111-111111111111")!,
+                original: "fix this typo",
+                polished: "Fix this typo.",
+                backendLabel: "on-device",
+                date: Date(timeIntervalSince1970: 770_000_000)
+            ),
+            PromptEntry(
+                id: UUID(uuidString: "22222222-2222-2222-2222-222222222222")!,
+                original: "make this more concise",
+                polished: "Make this more concise.",
+                backendLabel: "on-device",
+                date: Date(timeIntervalSince1970: 769_000_000)
+            ),
+            PromptEntry(
+                id: UUID(uuidString: "33333333-3333-3333-3333-333333333333")!,
+                original: "polish the greeting",
+                polished: "Polish the greeting.",
+                backendLabel: "Claude · Haiku 4.5",
+                date: Date(timeIntervalSince1970: 768_000_000)
+            ),
         ]
         let view = HistoryView(
             entries: entries,
@@ -188,14 +241,58 @@ struct SnapshotTests {
             onClose: {}
         )
         let v = host(view, height: 240, dark: false)
-        assertSnapshot(of: v, as: .image, named: "history-populated")
+        assertSnapshot(of: v, as: .image, named: "history-populated", record: .missing)
     }
 
     // MARK: ThinkingBar — in-progress state
 
     @Test func thinkingBarLight() {
         let v = host(ThinkingBar(dark: false), height: 60, dark: false)
-        assertSnapshot(of: v, as: .image, named: "thinking-bar-light")
+        assertSnapshot(of: v, as: .image, named: "thinking-bar-light", record: .missing)
+    }
+
+    // MARK: BackendBadge — cloud trigger
+    //
+    // Every other snapshot uses `snapshotStore()` (no keys → on-device)
+    // which only exercises the static-label path. These two tests
+    // pre-seed a Claude key in the test-scoped Keychain so the badge
+    // renders its Menu trigger — cloud glyph, "Claude · Haiku 4.5" /
+    // "Cloud · Haiku 4.5" label, trailing chevron. Locks in the
+    // dropdown's *resting* state (the menu popup itself can't be
+    // captured — `Menu` only renders the trigger until clicked).
+
+    @Test func backendBadgeCloudCompact() throws {
+        let scratch = ScratchDefaults.make()
+        defer { scratch.cleanup() }
+        let service = "linter.tests.snapshot.\(UUID().uuidString)"
+        let store = PromptStore(
+            defaults: scratch.defaults,
+            keychainService: service,
+            claudeAccount: "snap-claude",
+            openaiAccount: "snap-openai"
+        )
+        defer { try? store.clearClaudeKey() }
+        try store.setClaudeKey("test-key")
+        let view = BackendBadge(store: store, style: .compact, dark: false)
+        let v = host(view, height: 30, dark: false)
+        assertSnapshot(of: v, as: .image, named: "backend-badge-cloud-compact-light", record: .missing)
+    }
+
+    @Test func backendBadgeCloudPrivacyFramed() throws {
+        let scratch = ScratchDefaults.make()
+        defer { scratch.cleanup() }
+        let service = "linter.tests.snapshot.\(UUID().uuidString)"
+        let store = PromptStore(
+            defaults: scratch.defaults,
+            keychainService: service,
+            claudeAccount: "snap-claude",
+            openaiAccount: "snap-openai"
+        )
+        defer { try? store.clearClaudeKey() }
+        try store.setClaudeKey("test-key")
+        let view = BackendBadge(store: store, style: .privacyFramed, dark: false)
+        let v = host(view, height: 30, dark: false)
+        assertSnapshot(of: v, as: .image, named: "backend-badge-cloud-privacy-light", record: .missing)
     }
 }
 
