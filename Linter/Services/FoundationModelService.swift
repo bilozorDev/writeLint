@@ -53,14 +53,25 @@ struct LintResult {
     var issue: LintIssue?
 }
 
-/// User-visible categorization of a chunk-level fallback. Maps to the warning
-/// bar shown when output equals input only because the polish failed, not
-/// because the text was already clean.
+/// User-visible categorization of a chunk-level outcome. Two flavors:
+/// "full fallback" cases (`.hallucinated`, `.generationError`,
+/// `.malformedOutput`) where the output equals the input because the
+/// polish failed, and `.drifted` where the polish *succeeded* but the
+/// output diverged from the input enough to warrant a soft "double-
+/// check" warning. The UI distinguishes them — full fallbacks render
+/// `PartialIssueNotice` above the diff (or `IssueBar` on no-diff
+/// results); drift renders a softer notice below the diff.
 enum LintIssue: Equatable {
-    /// Hallucination guard tripped (added parens, word-count drift, leaked
-    /// instruction phrase). `reason` is the `HallucinationReason.description`
-    /// so the UI can tailor the detail copy.
+    /// Hallucination guard tripped on a structural failure (added parens
+    /// or leaked instruction phrase). The chunk fell back to the input.
+    /// `reason` is the `HallucinationReason.description` so the UI can
+    /// tailor the detail copy. On-device only.
     case hallucinated(reason: String)
+    /// On-device word-count drift (>1.3× expansion or <0.8× shrinkage).
+    /// We KEEP the model's output but surface a soft warning so the user
+    /// can review before accepting. On-device only — cloud backends
+    /// don't run this check at all (see ClaudeBackend / OpenAIBackend).
+    case drifted(reason: String)
     /// `LanguageModelSession.GenerationError` we chose to swallow (guardrail,
     /// unsupported language, exceeded context window). `detail` is a friendly
     /// message for the user.
@@ -69,10 +80,22 @@ enum LintIssue: Equatable {
     /// JSON from the on-device model).
     case malformedOutput
 
+    /// True for issues where the chunk's output was replaced with the
+    /// input verbatim. Drives the UI choice between `PartialIssueNotice`
+    /// (full fallback — "some sections couldn't be polished") and the
+    /// softer drift notice (output kept, just flagged for review).
+    var isFullFallback: Bool {
+        switch self {
+        case .hallucinated, .generationError, .malformedOutput: return true
+        case .drifted: return false
+        }
+    }
+
     /// Headline shown in the warning bar.
     var headline: String {
         switch self {
         case .hallucinated:       return "Couldn't polish reliably"
+        case .drifted:            return "Output may need a quick review"
         case .generationError:    return "Couldn't polish this text"
         case .malformedOutput:    return "Couldn't polish this text"
         }
@@ -82,12 +105,6 @@ enum LintIssue: Equatable {
     var detail: String {
         switch self {
         case .hallucinated(let reason):
-            if reason.hasPrefix("word-expansion") {
-                return "The model wrote new text instead of polishing yours, so we kept your original. If your input is a question, the model may be trying to answer it — try wording it as a statement."
-            }
-            if reason.hasPrefix("word-shrinkage") {
-                return "The model dropped too much content, so we kept your original."
-            }
             if reason == "added-parens" {
                 return "The model expanded an acronym, so we kept your original."
             }
@@ -95,6 +112,14 @@ enum LintIssue: Equatable {
                 return "The model's output included instruction text, so we kept your original."
             }
             return "We kept your original text."
+        case .drifted(let reason):
+            if reason.hasPrefix("word-expansion") {
+                return "The polished version is significantly longer than your input. Skim it before accepting."
+            }
+            if reason.hasPrefix("word-shrinkage") {
+                return "The polished version is significantly shorter than your input. Skim it before accepting."
+            }
+            return "The polished version diverged from your input. Skim it before accepting."
         case .generationError(let detail):
             return detail
         case .malformedOutput:
@@ -102,18 +127,20 @@ enum LintIssue: Equatable {
         }
     }
 
-    /// Priority for surfacing one issue when multiple chunks fall back.
-    /// Hallucinations rank highest because they're the most user-actionable
-    /// (almost always a prompt-tunable problem), then framework generation
-    /// errors (sometimes user-actionable: shorten, change wording), and
-    /// finally malformed output, which is rarely something the user can fix.
+    /// Priority for surfacing one issue when multiple chunks produce
+    /// different issues. Hard structural failures rank highest because
+    /// they're the most user-actionable (almost always a prompt-tunable
+    /// problem). Drift is the softest signal — only surfaces when
+    /// nothing worse fired in the same lint, since the output IS being
+    /// used and the user can judge for themselves.
     /// Used by `LintIssue.upgrade(_:with:)` to keep the highest-priority
     /// issue when a later chunk fires a more-actionable guard than an
     /// earlier one.
     var priority: Int {
         switch self {
-        case .hallucinated:     return 2
-        case .generationError:  return 1
+        case .hallucinated:     return 3
+        case .generationError:  return 2
+        case .drifted:          return 1
         case .malformedOutput:  return 0
         }
     }
@@ -409,13 +436,26 @@ final class FoundationModelService {
                 if cleaned != polished {
                     lintLog.notice("chunk \(i): stripped wrapping quotes")
                 }
-                // Hallucination guard — fall back to original chunk if the
-                // model expanded the text (acronym expansion, invented
-                // connectors). Better to no-op than to ship hallucinations.
+                // Hallucination guard. Two policies depending on the failure
+                // mode: structural problems (added parens, leaked instruction
+                // phrases) fall back to the input verbatim — those are
+                // unambiguously broken outputs. Word-count drift (>1.3× /
+                // <0.8×) keeps the model's output and surfaces a soft warning
+                // for the user to judge — drift is sometimes a legitimate
+                // rewrite, especially with non-grammar templates, so blocking
+                // on it produces more false positives than catches.
                 if let reason = Self.hallucinationReason(input: chunk.text, output: cleaned) {
-                    lintLog.notice("chunk \(i): HALLUCINATED (\(reason.description, privacy: .public)) — falling back to original")
-                    output += chunk.text
-                    currentIssue = LintIssue.upgrade(currentIssue, with: .hallucinated(reason: reason.description))
+                    switch reason {
+                    case .wordCountExpansion, .wordCountShrinkage:
+                        lintLog.notice("chunk \(i): DRIFTED (\(reason.description, privacy: .public)) — keeping output, flagging for review")
+                        lintLog.notice("chunk \(i): out=\(Self.quoteForLog(cleaned), privacy: .private)")
+                        output += cleaned
+                        currentIssue = LintIssue.upgrade(currentIssue, with: .drifted(reason: reason.description))
+                    case .addedParens, .leakedPhrase:
+                        lintLog.notice("chunk \(i): HALLUCINATED (\(reason.description, privacy: .public)) — falling back to original")
+                        output += chunk.text
+                        currentIssue = LintIssue.upgrade(currentIssue, with: .hallucinated(reason: reason.description))
+                    }
                 } else if cleaned == chunk.text.trimmingCharacters(in: .whitespacesAndNewlines) {
                     lintLog.notice("chunk \(i): NO-OP (model returned input verbatim)")
                     output += cleaned

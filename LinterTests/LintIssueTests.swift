@@ -53,8 +53,55 @@ struct LintIssueTests {
     }
 
     @Test func priorityOrdering() {
-        // Simple sanity: hallucinated > generationError > malformedOutput.
+        // Hard structural failures beat soft signals; drifted is the
+        // softest issue — only surfaces when nothing worse fired in the
+        // same lint, since the model's output IS being shown to the user.
+        // Order: hallucinated > generationError > drifted > malformedOutput.
         #expect(LintIssue.hallucinated(reason: "x").priority > LintIssue.generationError(detail: "x").priority)
-        #expect(LintIssue.generationError(detail: "x").priority > LintIssue.malformedOutput.priority)
+        #expect(LintIssue.generationError(detail: "x").priority > LintIssue.drifted(reason: "x").priority)
+        #expect(LintIssue.drifted(reason: "x").priority > LintIssue.malformedOutput.priority)
+    }
+
+    @Test func driftedLosesToHardFailures() {
+        // A lint that produced one drift chunk + one hallucination chunk
+        // should surface the hallucination — the drift output is fine to
+        // show, but a chunk hard-failing is the more important signal.
+        let upgraded = LintIssue.upgrade(.drifted(reason: "word-expansion 5→9"),
+                                          with: .hallucinated(reason: "added-parens"))
+        #expect(upgraded == .hallucinated(reason: "added-parens"))
+
+        let fromGenError = LintIssue.upgrade(.drifted(reason: "word-shrinkage 9→4"),
+                                              with: .generationError(detail: "blocked"))
+        #expect(fromGenError == .generationError(detail: "blocked"))
+    }
+
+    @Test func driftedBeatsMalformedOutput() {
+        // Drift IS user-actionable (read it, judge it) — malformed output
+        // is rarely fixable from the user side, so drift wins surfacing.
+        let upgraded = LintIssue.upgrade(.malformedOutput, with: .drifted(reason: "word-expansion 5→9"))
+        #expect(upgraded == .drifted(reason: "word-expansion 5→9"))
+    }
+
+    @Test func isFullFallbackDistinguishesDriftFromOthers() {
+        // The UI uses `isFullFallback` to pick between the destructive
+        // PartialIssueNotice (above the diff) and the soft DriftWarning
+        // (below the diff). Drift is the only non-fallback issue.
+        #expect(LintIssue.drifted(reason: "x").isFullFallback == false)
+        #expect(LintIssue.hallucinated(reason: "x").isFullFallback == true)
+        #expect(LintIssue.generationError(detail: "x").isFullFallback == true)
+        #expect(LintIssue.malformedOutput.isFullFallback == true)
+    }
+
+    @Test func driftedDetailUsesSoftLanguage() {
+        // The drift detail copy must NOT say "we kept your original" —
+        // we DIDN'T keep the original, we used the model's output.
+        // Different policy from the hallucinated copy, so guard-rail it.
+        let expansion = LintIssue.drifted(reason: "word-expansion 5→9").detail
+        #expect(expansion.contains("longer"))
+        #expect(!expansion.contains("kept your original"))
+
+        let shrinkage = LintIssue.drifted(reason: "word-shrinkage 12→4").detail
+        #expect(shrinkage.contains("shorter"))
+        #expect(!shrinkage.contains("kept your original"))
     }
 }

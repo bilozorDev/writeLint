@@ -516,7 +516,7 @@ struct LinterWindow: View {
                     }
                 } else {
                     Divider().background(Palette.divider(dark))
-                    if r.issue != nil {
+                    if let issue = r.issue, issue.isFullFallback {
                         // Partial fallback: at least one chunk fell back to
                         // its original text but other chunks produced real
                         // edits, so the diff below mixes polished and
@@ -531,6 +531,14 @@ struct LinterWindow: View {
                     }
                     .frame(maxHeight: 360)
                     .background(Palette.footerBg(dark))
+                    if case .drifted(let reason) = r.issue {
+                        // Soft warning anchored UNDER the diff so the user
+                        // sees the output first, then the caveat. Drift
+                        // means the model produced a usable polish that
+                        // diverged enough from the input to deserve a
+                        // double-check; we don't block, we flag.
+                        DriftWarning(reason: reason, dark: dark)
+                    }
                     ResultActions(
                         stats: r.stats,
                         latencyMs: r.latencyMs,
@@ -1055,6 +1063,41 @@ private struct PartialIssueNotice: View {
         }
         .padding(.horizontal, 14).padding(.vertical, 6)
         .background(Palette.removed.opacity(dark ? 0.10 : 0.06))
+    }
+}
+
+/// Soft "double-check this" notice shown UNDER the diff when the on-device
+/// hallucination guard flagged word-count drift but we kept the model's
+/// output anyway (per v2 policy: warn, don't block). Uses the muted sub
+/// palette and an info glyph rather than the destructive red of
+/// `PartialIssueNotice` — drift is a hint, not a failure.
+private struct DriftWarning: View {
+    let reason: String
+    let dark: Bool
+
+    private var copy: String {
+        if reason.hasPrefix("word-expansion") {
+            return "The polished version is significantly longer than your input. Skim it before accepting."
+        }
+        if reason.hasPrefix("word-shrinkage") {
+            return "The polished version is significantly shorter than your input. Skim it before accepting."
+        }
+        return "The polished version diverged from your input. Skim it before accepting."
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "info.circle.fill")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(Palette.sub(dark))
+            Text(copy)
+                .font(.system(size: 11.5))
+                .foregroundStyle(Palette.sub(dark))
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 14).padding(.vertical, 6)
+        .background(Palette.surface(dark))
     }
 }
 
