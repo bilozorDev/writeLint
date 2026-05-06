@@ -94,18 +94,11 @@ final class OpenAIBackend {
                 if cleaned != polished {
                     log.notice("chunk \(i): stripped wrapping quotes")
                 }
-                // Word-count guards disabled (same as Claude path) — GPT
-                // models also rewrite freely. Parens + leaked-phrase
-                // guards stay (model-agnostic failure modes).
-                if let reason = FoundationModelService.hallucinationReason(
-                    input: chunk.text,
-                    output: cleaned,
-                    includeWordCountChecks: false
-                ) {
-                    log.notice("chunk \(i): HALLUCINATED (\(reason.description, privacy: .public)) — falling back to original")
-                    output += chunk.text
-                    currentIssue = LintIssue.upgrade(currentIssue, with: .hallucinated(reason: reason.description))
-                } else if cleaned == chunk.text.trimmingCharacters(in: .whitespacesAndNewlines) {
+                // No hallucination guard on the cloud path (same as Claude).
+                // GPT follows prompt directives reliably; users opting into
+                // OpenAI usually want freer rewrites than the on-device
+                // model allows. Trust the output; let the user judge.
+                if cleaned == chunk.text.trimmingCharacters(in: .whitespacesAndNewlines) {
                     log.notice("chunk \(i): NO-OP (model returned input verbatim)")
                     output += cleaned
                 } else {

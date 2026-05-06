@@ -99,20 +99,13 @@ final class ClaudeBackend {
                 if cleaned != polished {
                     log.notice("chunk \(i): stripped wrapping quotes")
                 }
-                // Word-count guards are disabled for the Claude path —
-                // Claude rewrites more freely than the on-device GEC model
-                // and would trip the 1.3× cap on legitimate output. Parens
-                // and leaked-phrase guards stay (model-agnostic failure
-                // modes).
-                if let reason = FoundationModelService.hallucinationReason(
-                    input: chunk.text,
-                    output: cleaned,
-                    includeWordCountChecks: false
-                ) {
-                    log.notice("chunk \(i): HALLUCINATED (\(reason.description, privacy: .public)) — falling back to original")
-                    output += chunk.text
-                    currentIssue = LintIssue.upgrade(currentIssue, with: .hallucinated(reason: reason.description))
-                } else if cleaned == chunk.text.trimmingCharacters(in: .whitespacesAndNewlines) {
+                // No hallucination guard on the cloud path. Claude follows
+                // prompt directives reliably (no spontaneous acronym
+                // expansion or instruction-leak in our usage), and a key
+                // reason users opt into a cloud backend is exactly to
+                // unlock more freeform rewrites. Trust the output; let the
+                // user judge.
+                if cleaned == chunk.text.trimmingCharacters(in: .whitespacesAndNewlines) {
                     log.notice("chunk \(i): NO-OP (model returned input verbatim)")
                     output += cleaned
                 } else {
