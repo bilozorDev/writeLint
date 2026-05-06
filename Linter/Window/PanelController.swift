@@ -40,6 +40,14 @@ final class PanelController {
     /// changed while the panel was hidden (e.g. Apple Intelligence
     /// availability flipping from .unavailable to .available).
     var onShow: () -> Void = {}
+    /// Set by `LinterWindow`. Returns whether a click outside the panel
+    /// should dismiss the panel. Returns `false` while Settings is open
+    /// so the user can copy/paste between the template editor and
+    /// another app without losing in-progress edits. Closure form (not
+    /// a Bool) so the dismiss monitors evaluate it at click time —
+    /// mutating an observed Bool from `LinterWindow` would race with
+    /// the @State reference captured at `.onAppear` time.
+    var shouldDismissOnClickOutside: () -> Bool = { true }
 
     /// Stamp incremented on every `show()`. The deferred onHide closure
     /// captures the value at hide-time and only clears state if no new
@@ -106,7 +114,8 @@ final class PanelController {
     private func installDismissMonitors() {
         let mask: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown]
         globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] _ in
-            self?.hide()
+            guard let self, self.shouldDismissOnClickOutside() else { return }
+            self.hide()
         }
         localMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] event in
             guard let self, let panel = self.panel else { return event }
@@ -114,6 +123,12 @@ final class PanelController {
             // — SwiftUI `.alert` (e.g. SettingsPanel's Revert confirmation)
             // renders as a window-modal sheet whose `sheetParent === panel`.
             if event.window === panel || event.window?.sheetParent === panel {
+                return event
+            }
+            // Suppress click-outside dismiss while Settings is open
+            // (`shouldDismissOnClickOutside` returns false in that case).
+            // The user can still close via Back / Esc / clicking the gear.
+            if !self.shouldDismissOnClickOutside() {
                 return event
             }
             self.hide()

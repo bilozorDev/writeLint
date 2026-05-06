@@ -313,6 +313,16 @@ struct LinterWindow: View {
                 // without this the InlineErrorBar would persist forever.
                 availability = FoundationModelService.shared.availability
             }
+            // Suppress click-outside dismiss while Settings is open so the
+            // user can copy/paste between the template editor and another
+            // app (e.g. pasting a system prompt from notes, copying an
+            // API key from a password manager) without losing the panel.
+            // Closure is evaluated at click time — reads the @State
+            // `settingsOpen` through SwiftUI's storage cell, so it sees
+            // the current value even though `.onAppear` only fires once.
+            PanelController.shared.shouldDismissOnClickOutside = {
+                !settingsOpen
+            }
             PanelController.shared.onHide = {
                 // Preserve typed text across hide/show (Spotlight-style) when
                 // nothing was submitted in this session. Once the user has
