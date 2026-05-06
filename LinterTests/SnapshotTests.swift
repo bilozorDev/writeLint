@@ -247,7 +247,7 @@ struct SnapshotTests {
     // MARK: ThinkingBar — in-progress state
 
     @Test func thinkingBarLight() {
-        let v = host(ThinkingBar(dark: false), height: 60, dark: false)
+        let v = host(ThinkingBar(dark: false, descriptor: .onDevice), height: 60, dark: false)
         assertSnapshot(of: v, as: .image, named: "thinking-bar-light", record: .missing)
     }
 
@@ -329,9 +329,16 @@ struct SettingsPanelHarness: View {
     @Bindable var store: PromptStore
     let dark: Bool
     @State private var autoHide: Bool = true
+    @State private var draft: TemplateDraft? = nil
 
     var body: some View {
-        SettingsPanel(store: store, autoHide: $autoHide, dark: dark)
-            .frame(width: 660)
+        SettingsPanel(
+            store: store,
+            autoHide: $autoHide,
+            draft: $draft,
+            dark: dark,
+            attemptDiscardingDraft: { action in action() }
+        )
+        .frame(width: 660)
     }
 }

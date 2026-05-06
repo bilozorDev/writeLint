@@ -143,15 +143,59 @@ struct PromptHistoryTests {
         #expect(scratch.defaults.object(forKey: "promptHistory.v1") == nil)
     }
 
-    @Test func newEntriesPersistUnderV2Key() {
-        // Sanity-check that the new key really is `v2` — guards against
+    @Test func newEntriesPersistUnderV3Key() {
+        // Sanity-check that the new key really is `v3` — guards against
         // accidental key reverts that would silently lose data on next
         // launch.
         let scratch = ScratchDefaults.make()
         defer { scratch.cleanup() }
         let h = PromptHistory(defaults: scratch.defaults)
         h.recordAccepted(original: "hello", polished: "Hello.", backendLabel: "on-device")
-        #expect(scratch.defaults.data(forKey: "promptHistory.v2") != nil)
+        #expect(scratch.defaults.data(forKey: "promptHistory.v3") != nil)
+        #expect(scratch.defaults.data(forKey: "promptHistory.v2") == nil)
         #expect(scratch.defaults.data(forKey: "promptHistory.v1") == nil)
+    }
+
+    // MARK: v2 → v3 schema migration (templateID added)
+
+    @Test func legacyV2EntriesDecodeForwardWithNilTemplateID() throws {
+        // v2 entries carried (id, original, polished, backendLabel, date) —
+        // no `templateID`. Optional Codable fields decode to nil for missing
+        // keys, so v2 data should round-trip into v3 with templateID == nil
+        // and the legacy v2 key should be cleaned up.
+        let scratch = ScratchDefaults.make()
+        defer { scratch.cleanup() }
+        let v2Entry: [String: Any] = [
+            "id": "11111111-1111-1111-1111-111111111111",
+            "original": "old entry",
+            "polished": "Old entry.",
+            "backendLabel": "on-device",
+            "date": 770_000_000.0,
+        ]
+        let data = try JSONSerialization.data(withJSONObject: [v2Entry])
+        scratch.defaults.set(data, forKey: "promptHistory.v2")
+
+        let h = PromptHistory(defaults: scratch.defaults)
+        let entry = try #require(h.entries.first)
+        #expect(entry.original == "old entry")
+        #expect(entry.templateID == nil)
+        // v2 key removed after successful re-encode under v3.
+        #expect(scratch.defaults.data(forKey: "promptHistory.v2") == nil)
+        #expect(scratch.defaults.data(forKey: "promptHistory.v3") != nil)
+    }
+
+    @Test func recordAcceptedRoundTripsTemplateID() throws {
+        let scratch = ScratchDefaults.make()
+        defer { scratch.cleanup() }
+        let template = UUID()
+        let h = PromptHistory(defaults: scratch.defaults)
+        h.recordAccepted(
+            original: "hi",
+            polished: "Hi.",
+            backendLabel: "on-device",
+            templateID: template
+        )
+        let reloaded = PromptHistory(defaults: scratch.defaults)
+        #expect(reloaded.entries.first?.templateID == template)
     }
 }

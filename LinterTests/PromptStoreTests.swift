@@ -26,25 +26,38 @@ struct PromptStoreTests {
         defer { scratch.cleanup() }
         let store = Self.makeStore(scratch)
         #expect(store.instructions == PromptStore.defaultInstructions)
-        #expect(store.isAtDefault)
+        #expect(store.activeTemplate.isAtFactory)
         #expect(store.advancedMode == false)
     }
 
     @Test func loadsExistingInstructionsFromSuite() {
+        // v1 → v2 migration: a stored grammarPrompt.v1 carries forward
+        // into the seeded Grammar template's `instructions`, with the
+        // factory text preserved as `factoryInstructions`. The compat
+        // computed `instructions` reads the active template's body.
         let scratch = ScratchDefaults.make()
         defer { scratch.cleanup() }
         scratch.defaults.set("custom prompt", forKey: "grammarPrompt.v1")
         let store = Self.makeStore(scratch)
         #expect(store.instructions == "custom prompt")
-        #expect(store.isAtDefault == false)
+        #expect(store.activeTemplate.isAtFactory == false)
+        #expect(store.activeTemplate.factoryInstructions == PromptStore.defaultInstructions)
     }
 
-    @Test func writingInstructionsPersistsToSuite() {
+    @Test func writingInstructionsPersistsToTemplates() throws {
+        // The legacy `instructions` setter is a writable computed that
+        // routes per-keystroke writes to the active template's body. The
+        // canonical persisted form is the JSON-encoded `templates.v2`
+        // array; the legacy `grammarPrompt.v1` key is wiped on init and
+        // never written back.
         let scratch = ScratchDefaults.make()
         defer { scratch.cleanup() }
         let store = Self.makeStore(scratch)
         store.instructions = "new prompt"
-        #expect(scratch.defaults.string(forKey: "grammarPrompt.v1") == "new prompt")
+        let data = try #require(scratch.defaults.data(forKey: "templates.v2"))
+        let decoded = try JSONDecoder().decode([Template].self, from: data)
+        #expect(decoded.first?.instructions == "new prompt")
+        #expect(scratch.defaults.string(forKey: "grammarPrompt.v1") == nil)
     }
 
     @Test func writingAdvancedModePersistsToSuite() {
@@ -56,18 +69,18 @@ struct PromptStoreTests {
         #expect(scratch.defaults.bool(forKey: "advancedMode.v1") == true)
     }
 
-    @Test func revertToDefaultRestoresFactoryPrompt() {
+    @Test func revertTemplateToFactoryRestoresFactoryPrompt() {
         let scratch = ScratchDefaults.make()
         defer { scratch.cleanup() }
         let store = Self.makeStore(scratch)
         store.instructions = "user-customized prompt"
-        #expect(store.isAtDefault == false)
-        store.revertToDefault()
-        #expect(store.isAtDefault)
+        #expect(store.activeTemplate.isAtFactory == false)
+        store.revertTemplateToFactory(id: store.selectedTemplateID)
+        #expect(store.activeTemplate.isAtFactory)
         #expect(store.instructions == PromptStore.defaultInstructions)
         // Persisted too — next-launch load should match the default.
         let reloaded = Self.makeStore(scratch)
-        #expect(reloaded.isAtDefault)
+        #expect(reloaded.activeTemplate.isAtFactory)
     }
 
     @Test func emptyStoredStringFallsBackToDefault() {
@@ -78,13 +91,15 @@ struct PromptStoreTests {
         defer { scratch.cleanup() }
         scratch.defaults.set("", forKey: "grammarPrompt.v1")
         let store = Self.makeStore(scratch)
-        #expect(store.isAtDefault)
+        #expect(store.activeTemplate.isAtFactory)
     }
 
     @Test func initRemovesOrphanedTemplateKeys() {
-        // A user upgrading from the multi-template build will have these keys
-        // lingering. Init should clear them on first read so they don't bloat
-        // the prefs forever.
+        // A user upgrading from a different earlier multi-template build
+        // will have these keys lingering with an incompatible schema. Init
+        // clears them on first read so they don't bloat prefs forever.
+        // The new v2 keys (`templates.v2` / `selectedTemplateID.v2`) live
+        // under different names, so this cleanup doesn't touch them.
         let scratch = ScratchDefaults.make()
         defer { scratch.cleanup() }
         scratch.defaults.set(["junk"], forKey: "templates.v1")

@@ -1,12 +1,64 @@
 import SwiftUI
 
+/// In-progress new-template state. Held in `LinterWindow` and bound
+/// down into `SettingsPanel` so the settings-page back button (which
+/// lives in `LinterWindow`) can read it for the draft-discard alert.
+/// `hasContent` drives "is there anything to discard?" — both name and
+/// instructions are checked because the user might type a name first
+/// or paste a body first.
+struct TemplateDraft: Equatable {
+    var name: String = ""
+    var instructions: String = ""
+
+    var hasContent: Bool {
+        !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || !instructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// Save button stays disabled until BOTH name and instructions have
+    /// non-whitespace content. Saving with an empty body would
+    /// reproduce exactly the empty-prompt-freelancing bug we just
+    /// fixed; saving with an empty name leaves the user with an
+    /// unidentifiable row in the templates list.
+    var canSave: Bool {
+        !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !instructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+}
+
+/// Sentinel used by `.focused(...)` for the draft editor's name field.
+/// `@FocusState` requires a Hashable key; the regular per-template
+/// focus uses `UUID?`, so we use a dedicated draft-marker UUID to
+/// avoid colliding with any real template ID.
+private let draftNameFocusKey = UUID()
+
 struct SettingsPanel: View {
     @Bindable var store: PromptStore
     @Binding var autoHide: Bool
+    @Binding var draft: TemplateDraft?
     let dark: Bool
+
+    /// Closure provided by `LinterWindow` that runs `action` only after
+    /// the user has resolved any unsaved draft (immediately if nothing
+    /// to discard, after Discard confirmation otherwise). Used for
+    /// in-panel navigation (clicking another template row, clicking
+    /// "+ New template" again while a draft is active).
+    let attemptDiscardingDraft: (@escaping () -> Void) -> Void
 
     /// Set to true while the revert confirmation dialog is on screen.
     @State private var confirmingRevert = false
+
+    /// Set to true while the delete-template confirmation dialog is on
+    /// screen. Same destructive-action pattern as the revert and
+    /// remove-key alerts.
+    @State private var confirmingDelete = false
+
+    /// Drives focus on a template's name field after `+ New template`
+    /// fires. The view binds each name field to `.focused($nameFieldFocus,
+    /// equals: template.id)`, and the Add action sets `nameFieldFocus =
+    /// newID` so the user can immediately rename the template they just
+    /// created.
+    @FocusState private var nameFieldFocus: UUID?
 
     /// Local buffer for the API key SecureField. Cleared once the key is
     /// committed to the Keychain — we don't keep it in @State after that, so
@@ -108,15 +160,29 @@ struct SettingsPanel: View {
         }
         .padding(14)
         // Confirmation dialog for revert. The "Revert" button is destructive
-        // — it overwrites whatever's in the editor with `defaultInstructions`
-        // — so the user has to explicitly confirm.
+        // — it overwrites whatever's in the editor with the factory text
+        // for the *currently active* template — so the user has to
+        // explicitly confirm. Only enabled for templates with a non-nil
+        // `factoryInstructions` (i.e. built-ins).
         .alert("Revert prompt to default?", isPresented: $confirmingRevert) {
             Button("Cancel", role: .cancel) { }
             Button("Revert", role: .destructive) {
-                store.revertToDefault()
+                store.revertTemplateToFactory(id: store.selectedTemplateID)
             }
         } message: {
-            Text("Your customizations to the prompt will be deleted and replaced with the factory default. This can't be undone.")
+            Text("Your customizations to this template's prompt will be deleted and replaced with the factory default. This can't be undone.")
+        }
+        // Confirmation dialog for template delete. Only reachable when
+        // there are at least two templates (the Delete button is hidden
+        // when only one remains, and the store no-ops on the last
+        // template anyway as defense-in-depth).
+        .alert("Delete template?", isPresented: $confirmingDelete) {
+            Button("Cancel", role: .cancel) { }
+            Button("Delete", role: .destructive) {
+                store.deleteTemplate(id: store.selectedTemplateID)
+            }
+        } message: {
+            Text("\"\(store.activeTemplate.name)\" will be removed. This can't be undone.")
         }
         // Same confirmation pattern as Revert — destructive, one-click,
         // expensive to recover from (user has to find their API key
@@ -149,30 +215,163 @@ struct SettingsPanel: View {
 
     @ViewBuilder
     private var advancedSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            templatesList
+            // When a draft is active, render the draft editor in place
+            // of the per-template editor. Existing templates are still
+            // visible and clickable in the list above (clicks go
+            // through `attemptDiscardingDraft`), but the editor area is
+            // dedicated to the draft until Save or Cancel resolves it.
+            if draft != nil {
+                draftEditor
+            } else {
+                templateEditor
+            }
+            cloudBackendSection
+        }
+    }
+
+    /// Templates list — one row per template, each showing the name and
+    /// (for the first 9) the `⌘N` shortcut hint. Tapping a row makes that
+    /// template active. The "+ New template" button below appends a new
+    /// user-created template with an auto-numbered name and immediately
+    /// pulls focus to its name field for rename.
+    @ViewBuilder
+    private var templatesList: some View {
         VStack(alignment: .leading, spacing: 8) {
+            sectionLabel("Templates").padding(.leading, 4)
+
+            VStack(spacing: 2) {
+                ForEach(Array(store.templates.enumerated()), id: \.element.id) { idx, template in
+                    templateRow(idx: idx, template: template)
+                }
+            }
+            .padding(.horizontal, 4)
+
             HStack {
-                sectionLabel("Prompt")
-                Spacer()
                 Button {
-                    confirmingRevert = true
+                    // Starting a new draft while another draft has
+                    // unsaved content prompts the discard alert; an
+                    // empty (or absent) draft is replaced silently.
+                    attemptDiscardingDraft {
+                        draft = TemplateDraft()
+                        nameFieldFocus = draftNameFocusKey
+                    }
                 } label: {
                     HStack(spacing: 4) {
-                        Image(systemName: "arrow.uturn.backward")
-                            .font(.system(size: 10, weight: .semibold))
-                        Text("Revert to default")
+                        Image(systemName: "plus")
+                            .font(.system(size: 10.5, weight: .semibold))
+                        Text("New template")
                             .font(.system(size: 11.5, weight: .semibold))
                     }
-                    .foregroundStyle(store.isAtDefault ? Palette.sub(dark) : Palette.removed)
+                    .foregroundStyle(Palette.text(dark))
                 }
                 .buttonStyle(.plain)
-                .disabled(store.isAtDefault)
+                Spacer()
+            }
+            .padding(.leading, 4)
+        }
+    }
+
+    @ViewBuilder
+    private func templateRow(idx: Int, template: Template) -> some View {
+        let isSelected = template.id == store.selectedTemplateID
+        HStack {
+            Text(template.name)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Palette.text(dark))
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer(minLength: 12)
+            if idx < 9 {
+                Text("⌘\(idx + 1)")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(Palette.sub(dark))
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(isSelected ? Palette.surfaceStrong(dark) : Palette.surface(dark))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .contentShape(Rectangle())
+        .onTapGesture {
+            // Switching to an existing template while a draft has
+            // unsaved content prompts the discard alert.
+            attemptDiscardingDraft {
+                store.selectTemplate(id: template.id)
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityLabel(for: template, idx: idx))
+        .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : [.isButton])
+    }
+
+    private func accessibilityLabel(for template: Template, idx: Int) -> String {
+        let position = "template \(idx + 1) of \(store.templates.count)"
+        if idx < 9 {
+            return "\(template.name), \(position), shortcut Command \(idx + 1)"
+        }
+        return "\(template.name), \(position)"
+    }
+
+    /// Per-active-template editor: name field, Revert (built-ins only),
+    /// Delete (hidden on the last remaining template), and the body
+    /// TextEditor that the legacy `$store.instructions` binding still
+    /// drives — the writable computed routes the binding through
+    /// `setInstructions(_:for:)` keyed on `selectedTemplateID`.
+    @ViewBuilder
+    private var templateEditor: some View {
+        let active = store.activeTemplate
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                TextField("Template name", text: nameBinding(for: active.id))
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Palette.text(dark))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+                    .background(RoundedRectangle(cornerRadius: 7).fill(Palette.surface(dark)))
+                    .overlay(RoundedRectangle(cornerRadius: 7).stroke(Palette.divider(dark), lineWidth: 0.5))
+                    .focused($nameFieldFocus, equals: active.id)
+                Spacer()
+                if active.factoryInstructions != nil {
+                    Button {
+                        confirmingRevert = true
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "arrow.uturn.backward")
+                                .font(.system(size: 10, weight: .semibold))
+                            Text("Revert")
+                                .font(.system(size: 11.5, weight: .semibold))
+                        }
+                        .foregroundStyle(active.isAtFactory ? Palette.sub(dark) : Palette.removed)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(active.isAtFactory)
+                }
+                if store.templates.count > 1 {
+                    Button {
+                        confirmingDelete = true
+                    } label: {
+                        Image(systemName: "trash")
+                            .font(.system(size: 12))
+                            .foregroundStyle(Palette.removed)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Delete template")
+                }
             }
             .padding(.leading, 4)
 
             // The model receives this string verbatim as its system message.
             // Examples are part of the prompt — they're not injected
             // separately — so editing them here changes exactly what the
-            // model sees, regardless of which backend is active.
+            // model sees, regardless of which backend is active. The
+            // writable computed `instructions` routes per-keystroke writes
+            // to `setInstructions(_:for: selectedTemplateID)` synchronously
+            // on the main actor, so a mid-keystroke ⌘N switch lands
+            // subsequent writes on the new template without mixing them
+            // into the previous one's body.
             TextEditor(text: $store.instructions)
                 .font(.system(size: 12, design: .monospaced))
                 .foregroundStyle(Palette.text(dark))
@@ -186,9 +385,120 @@ struct SettingsPanel: View {
                 .font(.system(size: 10.5))
                 .foregroundStyle(Palette.sub(dark))
                 .padding(.leading, 4)
-
-            cloudBackendSection
         }
+    }
+
+    /// Two-way binding for a template's name. Reads the current value
+    /// from `templates`; writes route through `renameTemplate(id:to:)`
+    /// which trims whitespace and rejects empty names. SwiftUI invokes
+    /// the setter on every keystroke, so empty/whitespace-only states
+    /// during typing are handled gracefully — the rejected write is a
+    /// no-op and the get returns the previous value on the next read.
+    private func nameBinding(for id: UUID) -> Binding<String> {
+        Binding(
+            get: { store.templates.first(where: { $0.id == id })?.name ?? "" },
+            set: { store.renameTemplate(id: id, to: $0) }
+        )
+    }
+
+    /// Per-keystroke binding for the draft name. Writes pass through
+    /// raw — no trim, no reject — so the user sees what they typed in
+    /// real time. The trim-and-reject step happens at Save time.
+    private var draftNameBinding: Binding<String> {
+        Binding(
+            get: { draft?.name ?? "" },
+            set: { newValue in
+                guard draft != nil else { return }
+                draft?.name = newValue
+            }
+        )
+    }
+
+    /// Per-keystroke binding for the draft body. Same shape as
+    /// `draftNameBinding` — raw passthrough until Save.
+    private var draftInstructionsBinding: Binding<String> {
+        Binding(
+            get: { draft?.instructions ?? "" },
+            set: { newValue in
+                guard draft != nil else { return }
+                draft?.instructions = newValue
+            }
+        )
+    }
+
+    /// New-template editor. Replaces `templateEditor` while a draft is
+    /// active. The draft is local UI state — nothing is added to
+    /// `store.templates` until the user clicks Save. Cancel discards
+    /// without confirmation (the user explicitly chose to discard);
+    /// any *navigation* away from the draft (Back, row tap, "+ New"
+    /// again) routes through `attemptDiscardingDraft` which raises
+    /// the confirmation alert in `LinterWindow`.
+    @ViewBuilder
+    private var draftEditor: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                TextField("Template name", text: draftNameBinding)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Palette.text(dark))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+                    .background(RoundedRectangle(cornerRadius: 7).fill(Palette.surface(dark)))
+                    .overlay(RoundedRectangle(cornerRadius: 7).stroke(Palette.divider(dark), lineWidth: 0.5))
+                    .focused($nameFieldFocus, equals: draftNameFocusKey)
+                Spacer()
+                // Cancel discards the draft outright. Acceptable without
+                // confirmation because the user explicitly chose to
+                // discard — the confirmation alert is for *implicit*
+                // navigation away (closing Settings, switching template).
+                Button {
+                    draft = nil
+                } label: {
+                    Text("Cancel")
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundStyle(Palette.sub(dark))
+                }
+                .buttonStyle(.plain)
+                Button {
+                    saveDraft()
+                } label: {
+                    Text("Save")
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundStyle((draft?.canSave ?? false) ? Palette.accent : Palette.sub(dark))
+                }
+                .buttonStyle(.plain)
+                .disabled(!(draft?.canSave ?? false))
+            }
+            .padding(.leading, 4)
+
+            // Same TextEditor styling as the per-template editor — keeps
+            // the visual continuity between drafting and editing a
+            // saved template.
+            TextEditor(text: draftInstructionsBinding)
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundStyle(Palette.text(dark))
+                .scrollContentBackground(.hidden)
+                .padding(8)
+                .frame(minHeight: 220, maxHeight: 320)
+                .background(RoundedRectangle(cornerRadius: 7).fill(Palette.surface(dark)))
+                .overlay(RoundedRectangle(cornerRadius: 7).stroke(Palette.divider(dark), lineWidth: 0.5))
+
+            Text("Write the entire system prompt the model should receive — examples included. Save to add the template; Cancel to discard.")
+                .font(.system(size: 10.5))
+                .foregroundStyle(Palette.sub(dark))
+                .padding(.leading, 4)
+        }
+    }
+
+    /// Commit the draft to the store and clear it. Trims whitespace
+    /// from name and body; the `canSave` gate ensures both are
+    /// non-empty before this is reachable.
+    private func saveDraft() {
+        guard let d = draft, d.canSave else { return }
+        let trimmedName = d.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedBody = d.instructions.trimmingCharacters(in: .whitespacesAndNewlines)
+        _ = store.addTemplate(name: trimmedName, instructions: trimmedBody)
+        draft = nil
     }
 
     /// Cloud backend opt-in. Lives inside Advanced Mode so it's hidden from

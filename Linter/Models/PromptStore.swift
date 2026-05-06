@@ -95,38 +95,91 @@ enum OpenAIModel: String, CaseIterable, Identifiable {
     }
 }
 
-/// Single source of truth for the LLM prompt and the user-facing
+/// One named prompt the user can swap between. The full system message
+/// the model receives is `instructions` — examples, rules, the lot. There
+/// is no schema-side or transcript-side injection layered on top; what
+/// you see here is what the model sees.
+///
+/// `factoryInstructions` is non-nil for built-in templates that ship with
+/// the app (today: just "Grammar"). User-created templates get `nil`, so
+/// the Settings UI hides the Revert button for them.
+struct Template: Codable, Identifiable, Equatable {
+    var id: UUID
+    var name: String
+    var instructions: String
+    var factoryInstructions: String?
+
+    /// True when this template's body equals its shipped factory text.
+    /// User-created templates (`factoryInstructions == nil`) always
+    /// return false — there's no factory to compare against, and the
+    /// Revert button is hidden for them anyway.
+    var isAtFactory: Bool {
+        factoryInstructions.map { $0 == instructions } ?? false
+    }
+}
+
+/// Single source of truth for the LLM prompts and the user-facing
 /// "Advanced Mode" toggle.
 ///
 /// Design notes:
-/// - There is exactly one prompt — the grammar-and-punctuation system
-///   instruction — sent to the on-device model. There used to be a multi-
-///   template UI; that's been removed in favor of a single prompt the user
-///   can see and edit when Advanced Mode is on.
-/// - `instructions` is the *complete* text the model receives. Examples,
-///   rules, and constraints all live in this one string. Nothing is mixed
-///   in from code at request time. That's the rule the user asked for:
-///   "all LLM instructions coming from it [the prompt], not hidden in our
-///   code."
+/// - The user maintains a list of named templates (`templates`). Exactly
+///   one is active at a time (`selectedTemplateID`). The legacy
+///   single-prompt API (`var instructions: String`) is preserved as a
+///   writable computed property so backends, the lint pipeline, and
+///   tests don't need to know there are multiple templates.
+/// - `activeTemplate.instructions` is the *complete* text the model
+///   receives. Examples, rules, and constraints all live in this one
+///   string per-template. Nothing is mixed in from code at request time.
 @Observable
 @MainActor
 final class PromptStore {
-    private static let instructionsKey = "grammarPrompt.v1"
-    private static let advancedModeKey = "advancedMode.v1"
-    private static let claudeModelKey  = "claudeModel.v1"
-    private static let openaiModelKey  = "openaiModel.v1"
-    private static let providerKey     = "cloudProvider.v1"
-    private static let backendKey      = "selectedBackend.v1"
+    private static let templatesKey          = "templates.v2"
+    private static let selectedTemplateIDKey = "selectedTemplateID.v2"
+    private static let legacyInstructionsKey = "grammarPrompt.v1"
+    private static let advancedModeKey       = "advancedMode.v1"
+    private static let claudeModelKey        = "claudeModel.v1"
+    private static let openaiModelKey        = "openaiModel.v1"
+    private static let providerKey           = "cloudProvider.v1"
+    private static let backendKey            = "selectedBackend.v1"
 
     private let defaults: UserDefaults
     private let keychainService: String
     private let claudeAccount: String
     private let openaiAccount: String
 
-    /// The full system prompt sent to the on-device model. Editable by the
-    /// user when Advanced Mode is enabled in Settings.
+    /// Ordered list of templates. The first entry is always the seeded
+    /// Grammar template (or a v1-migrated descendant of it). New
+    /// user-created templates append to the end.
+    var templates: [Template] {
+        didSet { persistTemplates() }
+    }
+
+    /// Which template is active for the next lint and which body the
+    /// `instructions` computed reads/writes. Self-heals on init if the
+    /// stored UUID doesn't match any current template.
+    var selectedTemplateID: UUID {
+        didSet {
+            defaults.set(selectedTemplateID.uuidString, forKey: Self.selectedTemplateIDKey)
+        }
+    }
+
+    /// The active template. Defensive `?? templates[0]` fallback exists
+    /// only to satisfy the type system; the `precondition` in `init`
+    /// guarantees `templates` is never empty, and `deleteTemplate`
+    /// no-ops on the last template, so the fallback should never fire.
+    var activeTemplate: Template {
+        templates.first(where: { $0.id == selectedTemplateID }) ?? templates[0]
+    }
+
+    /// Legacy single-prompt API, preserved as a writable computed
+    /// property so existing call sites in `LinterWindow`,
+    /// `FoundationModelService`, `ClaudeBackend`, `OpenAIBackend`, and
+    /// the test target keep working unchanged. Get returns the active
+    /// template's body; set routes through `setInstructions(_:for:)`
+    /// keyed on `selectedTemplateID` at call time.
     var instructions: String {
-        didSet { defaults.set(instructions, forKey: Self.instructionsKey) }
+        get { activeTemplate.instructions }
+        set { setInstructions(newValue, for: selectedTemplateID) }
     }
 
     /// When true, Settings reveals the prompt editor and Revert button.
@@ -273,12 +326,57 @@ final class PromptStore {
         self.keychainService = keychainService
         self.claudeAccount = claudeAccount
         self.openaiAccount = openaiAccount
-        let stored = defaults.string(forKey: Self.instructionsKey)
-        if let stored, !stored.isEmpty {
-            self.instructions = stored
+
+        // Templates: load v2, else migrate from grammarPrompt.v1, else
+        // seed default. `templates.v2` always wins when both v2 and v1
+        // exist (downgrade-replay scenario: v1 doesn't touch v2 keys, so
+        // v2 data survives a v1 round-trip; v1-era edits made between
+        // round-trips are intentionally dropped on the second v2 launch).
+        let loadedTemplates: [Template]
+        if let data = defaults.data(forKey: Self.templatesKey),
+           let decoded = try? JSONDecoder().decode([Template].self, from: data),
+           !decoded.isEmpty {
+            loadedTemplates = decoded
         } else {
-            self.instructions = Self.defaultInstructions
+            let legacy = defaults.string(forKey: Self.legacyInstructionsKey)
+            let seedInstructions: String
+            if let legacy, !legacy.isEmpty, legacy != Self.defaultInstructions {
+                seedInstructions = legacy
+            } else {
+                seedInstructions = Self.defaultInstructions
+            }
+            let grammar = Template(
+                id: UUID(),
+                name: "Grammar",
+                instructions: seedInstructions,
+                factoryInstructions: Self.defaultInstructions
+            )
+            loadedTemplates = [grammar]
+            if let data = try? JSONEncoder().encode(loadedTemplates) {
+                defaults.set(data, forKey: Self.templatesKey)
+            }
         }
+        self.templates = loadedTemplates
+        // Always remove the legacy key — including in the v2-already-present
+        // path, so a stray v1 key from a v1 round-trip gets cleaned up.
+        defaults.removeObject(forKey: Self.legacyInstructionsKey)
+
+        // Selected template ID: load v2 if present and matches a template,
+        // else first. Self-healing covers the rare race where `templates`
+        // and `selectedTemplateID` `didSet` writes were interrupted between
+        // calls.
+        let resolvedSelected: UUID
+        if let raw = defaults.string(forKey: Self.selectedTemplateIDKey),
+           let id = UUID(uuidString: raw),
+           loadedTemplates.contains(where: { $0.id == id }) {
+            resolvedSelected = id
+        } else {
+            resolvedSelected = loadedTemplates[0].id
+            defaults.set(resolvedSelected.uuidString, forKey: Self.selectedTemplateIDKey)
+        }
+        self.selectedTemplateID = resolvedSelected
+        precondition(!loadedTemplates.isEmpty, "PromptStore.templates must never be empty after init")
+
         // Locals named `initial*` to avoid shadowing the corresponding
         // stored properties — Swift requires every stored property to
         // be initialized before `self` is usable, so the migration block
@@ -316,9 +414,11 @@ final class PromptStore {
             hasOpenAIKey: initialOpenAIKey
         )
 
-        // One-time cleanup of orphaned keys from the multi-template build.
-        // No-op once removed — `removeObject` on a missing key is harmless,
-        // so we don't need a "did-clean-up" flag.
+        // One-time cleanup of orphaned keys from a different earlier
+        // multi-template build. The schema there was incompatible with
+        // v2; just drop the keys. `removeObject` on a missing key is
+        // harmless, so this is also a no-op for fresh installs and on
+        // every subsequent launch.
         defaults.removeObject(forKey: "templates.v1")
         defaults.removeObject(forKey: "selectedTemplateID.v1")
     }
@@ -356,6 +456,114 @@ final class PromptStore {
         case .openai: return hasOpenAIKey ? .openai : .onDevice
         }
     }
+
+    // MARK: - Template CRUD
+
+    /// Switch the active template by ID. No-ops if `id` doesn't match any
+    /// current template — defensive, since the only public way to get an
+    /// ID is to read one off `templates`, but `setSelectedID` paths from
+    /// stale view state could pass an old UUID.
+    func selectTemplate(id: UUID) {
+        guard templates.contains(where: { $0.id == id }) else { return }
+        selectedTemplateID = id
+    }
+
+    /// Switch the active template by zero-based index (so ⌘1 → 0). Silent
+    /// no-op when out of range, which is how ⌘5 with 2 templates becomes
+    /// a no-op without the call site needing to know the count.
+    func selectTemplate(at index: Int) {
+        guard templates.indices.contains(index) else { return }
+        selectedTemplateID = templates[index].id
+    }
+
+    /// Append a new user-created template and select it. Returns the new
+    /// UUID so the caller can drive focus (e.g. the Settings name field).
+    /// The default name auto-numbers to avoid collisions; callers wanting
+    /// a specific name should pass it explicitly. The `instructions`
+    /// parameter has no implicit default — Settings creates templates
+    /// via a draft + Save flow, so the body is always supplied
+    /// explicitly. The submit-time empty-instructions guard in
+    /// `LinterWindow.submit()` catches the case where a user manually
+    /// clears a saved template's body.
+    @discardableResult
+    func addTemplate(
+        name: String? = nil,
+        instructions: String
+    ) -> UUID {
+        let resolvedName = name ?? Self.defaultNameForNewTemplate(in: templates)
+        let t = Template(
+            id: UUID(),
+            name: resolvedName,
+            instructions: instructions,
+            factoryInstructions: nil
+        )
+        templates.append(t)
+        selectedTemplateID = t.id
+        return t.id
+    }
+
+    /// Compute the default name for a new template, picking the smallest
+    /// integer suffix not already in use. "New template" if untaken, else
+    /// "New template 2", "New template 3", and so on.
+    static func defaultNameForNewTemplate(in existing: [Template]) -> String {
+        let base = "New template"
+        let names = Set(existing.map(\.name))
+        if !names.contains(base) { return base }
+        var n = 2
+        while names.contains("\(base) \(n)") { n += 1 }
+        return "\(base) \(n)"
+    }
+
+    /// Remove a template. No-ops on the last remaining template — there
+    /// must always be at least one for the active-template invariant to
+    /// hold. If the deleted template was selected, selection moves to
+    /// the previous index (or `templates[0]` if we were at index 0).
+    func deleteTemplate(id: UUID) {
+        guard templates.count > 1 else { return }
+        guard let idx = templates.firstIndex(where: { $0.id == id }) else { return }
+        templates.remove(at: idx)
+        if selectedTemplateID == id {
+            selectedTemplateID = templates[max(0, idx - 1)].id
+        }
+    }
+
+    /// Rename a template. Trims surrounding whitespace; if the trimmed
+    /// result is empty, the rename is silently rejected (preserves the
+    /// previous name). Duplicates are allowed by design — the slash
+    /// popup matches in declared order, and ⌘N hints by position.
+    func renameTemplate(id: UUID, to name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        guard let idx = templates.firstIndex(where: { $0.id == id }) else { return }
+        templates[idx].name = trimmed
+    }
+
+    /// Update a template's body. Silent no-op if `id` doesn't match —
+    /// the writable computed `instructions` setter routes here using
+    /// `selectedTemplateID`, which is always valid.
+    func setInstructions(_ text: String, for id: UUID) {
+        guard let idx = templates.firstIndex(where: { $0.id == id }) else { return }
+        templates[idx].instructions = text
+    }
+
+    /// Reset a template's body to its shipped factory text. Only
+    /// meaningful for built-in templates (those with non-nil
+    /// `factoryInstructions`); silently no-ops for user-created ones.
+    /// The Settings UI hides the Revert button for templates without a
+    /// factory, so this guard is defense-in-depth.
+    func revertTemplateToFactory(id: UUID) {
+        guard let idx = templates.firstIndex(where: { $0.id == id }),
+              let factory = templates[idx].factoryInstructions else { return }
+        templates[idx].instructions = factory
+    }
+
+    private func persistTemplates() {
+        if let data = try? JSONEncoder().encode(templates) {
+            defaults.set(data, forKey: Self.templatesKey)
+        }
+    }
+
+    // MARK: - Cloud keys
 
     /// Persist `key` to the Keychain and flip `hasClaudeKey` so observers
     /// (the footer, the activeBackend-driven router) re-render. Throws on
@@ -422,15 +630,5 @@ final class PromptStore {
         if selectedBackend == .openai {
             selectedBackend = .onDevice
         }
-    }
-
-    /// Restore the factory grammar prompt. The Settings UI confirms before
-    /// calling this so the user can't lose customizations accidentally.
-    func revertToDefault() {
-        instructions = Self.defaultInstructions
-    }
-
-    var isAtDefault: Bool {
-        instructions == Self.defaultInstructions
     }
 }

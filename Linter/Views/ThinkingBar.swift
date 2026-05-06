@@ -1,7 +1,44 @@
 import SwiftUI
 
+/// Snapshot of which backend is producing the polish currently on the
+/// thinking spinner. Captured at submit time in `LinterWindow.submit()`
+/// so a mid-flight backend switch (via the footer Menu) doesn't relabel
+/// the bar to a backend that isn't actually running this lint.
+struct ThinkingDescriptor: Equatable {
+    /// Phrase shown next to the animated dots.
+    let leadingText: String
+    /// SF Symbol name for the right-side tag.
+    let glyph: String
+    /// Right-side tag text — model name (e.g. "Foundation Models",
+    /// "Claude Haiku 4.5", "GPT-4.1 mini").
+    let tagText: String
+
+    static let onDevice = ThinkingDescriptor(
+        leadingText: "Thinking on-device…",
+        glyph: "apple.logo",
+        tagText: "Foundation Models"
+    )
+
+    static func claude(_ model: ClaudeModel) -> ThinkingDescriptor {
+        ThinkingDescriptor(
+            leadingText: "Thinking on Claude…",
+            glyph: "cloud",
+            tagText: model.footerLabel
+        )
+    }
+
+    static func openai(_ model: OpenAIModel) -> ThinkingDescriptor {
+        ThinkingDescriptor(
+            leadingText: "Thinking on OpenAI…",
+            glyph: "cloud",
+            tagText: model.footerLabel
+        )
+    }
+}
+
 struct ThinkingBar: View {
     let dark: Bool
+    let descriptor: ThinkingDescriptor
     @State private var animate = false
 
     var body: some View {
@@ -19,11 +56,13 @@ struct ThinkingBar: View {
                         )
                 }
             }
-            Text("Thinking on-device…").font(.system(size: 12.5)).foregroundStyle(Palette.sub(dark))
+            Text(descriptor.leadingText)
+                .font(.system(size: 12.5))
+                .foregroundStyle(Palette.sub(dark))
             Spacer()
             HStack(spacing: 3) {
-                Image(systemName: "apple.logo").font(.system(size: 10))
-                Text("Foundation Models").font(.system(size: 10.5))
+                Image(systemName: descriptor.glyph).font(.system(size: 10))
+                Text(descriptor.tagText).font(.system(size: 10.5))
             }
             .opacity(0.7)
             .foregroundStyle(Palette.sub(dark))
