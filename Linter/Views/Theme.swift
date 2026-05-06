@@ -28,7 +28,12 @@ enum Palette {
     static let removed = Color(hex: "#FF453A")
     static let addedBg = Color(red: 48/255, green: 209/255, blue: 88/255).opacity(0.18)
     static let removedBg = Color(red: 255/255, green: 69/255, blue: 58/255).opacity(0.16)
+    /// Full template-swatch palette including the factory blue. Use this when
+    /// rendering the in-editor color picker so the user can re-pick blue.
     static let swatches: [String] = ["#0A84FF", "#FF9F0A", "#5E5CE6", "#30D158", "#FF453A", "#BF5AF2", "#64D2FF", "#FFD60A"]
+    /// Subset assigned to non-factory templates during v2→v3 migration so
+    /// user templates never silently clone the factory Grammar's blue+pencil.
+    static let nonFactorySwatches: [String] = ["#5E5CE6", "#FF9F0A", "#30D158", "#FF453A", "#BF5AF2", "#64D2FF", "#FFD60A"]
 
     static func text(_ dark: Bool) -> Color { dark ? .white : Color(hex: "#1a1a1a") }
     static func sub(_ dark: Bool) -> Color { dark ? .white.opacity(0.5) : .black.opacity(0.45) }
@@ -36,6 +41,32 @@ enum Palette {
     static func surface(_ dark: Bool) -> Color { dark ? .white.opacity(0.04) : .black.opacity(0.03) }
     static func surfaceStrong(_ dark: Bool) -> Color { dark ? .white.opacity(0.08) : .black.opacity(0.05) }
     static func footerBg(_ dark: Bool) -> Color { dark ? .black.opacity(0.18) : .black.opacity(0.015) }
+}
+
+/// String identifiers used in the design's template editor and persisted in
+/// `Template.iconName`. Maps to SF Symbols at render time. Kept as a plain
+/// enum (not on `Template`) so future builds can swap icon sets — or render
+/// custom assets — without bumping the schema again.
+enum TemplateIcon: String, CaseIterable, Identifiable {
+    case pencil
+    case spellcheck
+    case briefcase
+    case wave
+    case sparkle
+
+    var id: String { rawValue }
+
+    /// SF Symbol name used by `Image(systemName:)`. Names chosen to read as
+    /// the right idea without claiming any third-party brand mark.
+    var systemName: String {
+        switch self {
+        case .pencil:     return "pencil"
+        case .spellcheck: return "checkmark.circle"
+        case .briefcase:  return "briefcase"
+        case .wave:       return "waveform"
+        case .sparkle:    return "sparkles"
+        }
+    }
 }
 
 struct KbdLabel: View {

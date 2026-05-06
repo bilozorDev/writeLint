@@ -27,42 +27,203 @@ struct LinterWindow: View {
     /// auto-hidden flows clear (handleAccept nils `result` before hide(),
     /// which would otherwise look like an unsubmitted session).
     @State private var submittedThisSession = false
+    /// Captured at submit time alongside `instructions`, replayed into
+    /// `history.recordAccepted` on accept. Decouples the recorded
+    /// template from the currently-active one — if the user switches
+    /// templates between submit and accept, history reflects the
+    /// template the lint was *run with*.
+    @State private var lastSubmittedTemplateID: UUID?
 
-    /// X-offset of the page group. Animated via `withAnimation` in the
-    /// open/close helpers below — kept separate from `settingsOpen` so the
-    /// container's height (which derives from settingsOpen) snaps instantly
-    /// while only the slide animates. Otherwise the simultaneous height grow
-    /// + horizontal slide reads as a diagonal sweep.
-    @State private var slideOffset: CGFloat = 0
+    /// Snapshot of the backend driving the spinner currently on screen.
+    /// Captured at submit time so a mid-flight backend switch (via the
+    /// footer Menu) doesn't relabel the ThinkingBar to a backend that
+    /// isn't actually running this lint. Defaults to `.onDevice` for
+    /// the initial render — never read until `thinking == true`, but
+    /// SwiftUI requires a non-optional value here to avoid an extra
+    /// optional unwrap at the render site.
+    @State private var thinkingDescriptor: ThinkingDescriptor = .onDevice
 
-    /// Hard cap on the scrollable area inside settings — passed to the
-    /// settings page so its ScrollView clamps internally.
-    private let settingsScrollMax: CGFloat = 540
+    /// Live slash-popup state. Non-nil when the input begins with `/` and
+    /// at least one template name matches the prefix. Cleared on every
+    /// state transition that hides or replaces the main input (Settings
+    /// open, History open/close, history-detail open, panel hide) so
+    /// the popup never resurrects stale matches when the user navigates
+    /// back to the main page.
+    @State private var slashMenu: SlashMenuState?
 
-    /// Width of each page in the slide layout. Single source of truth for
-    /// `PageSlideLayout(pageWidth:)` and the settings-open `slideOffset`,
-    /// which must stay in lock-step or the inactive page peeks through.
-    private let pageWidth: CGFloat = 660
+    /// Draft state for an in-progress new template. Non-nil while the
+    /// user is filling in name + body in Settings; not added to
+    /// `store.templates` until Save is clicked. Navigating away
+    /// (closing Settings, switching to a different existing template,
+    /// clicking + New again) while a draft has content triggers the
+    /// discard confirmation alert.
+    @State private var draft: TemplateDraft?
+
+    /// Action queued behind the "Discard unsaved changes?" alert. Set
+    /// when the user attempts a navigation that would lose draft
+    /// changes; replayed when they click Discard, dropped when they
+    /// click Cancel.
+    @State private var pendingDiscardAction: (() -> Void)?
+
+    /// Drives the destructive-role discard alert.
+    @State private var confirmingDiscardDraft = false
+
+    /// Active right-pane route inside Settings — which template's editor
+    /// (or which system page) is showing on the detail side. Initialized
+    /// to a placeholder UUID; corrected on `.onAppear` (and again every
+    /// time Settings opens) to point at the user's currently-active
+    /// template so the user lands on something meaningful.
+    @State private var settingsPage: SettingsRoute = .template(UUID())
+
+    /// True for ~600ms after a ⌘1..⌘9 template switch — drives the
+    /// active-template badge's spring pulse in `InputRow` so the user
+    /// sees the change. Reset to false on a single-shot timer; if the
+    /// user mashes ⌘N the timer is just rescheduled, no leak risk
+    /// because we only ever read this state from the main actor.
+    @State private var justSwitchedTemplate: Bool = false
+
+    /// Width of the main page (input/result/footer). Settings has its own
+    /// 760pt frame baked into `SettingsPanel` so we don't propagate it
+    /// through here — the body's `.frame(width:)` chooses between
+    /// `mainWidth` and `760` based on `settingsOpen`.
+    private let mainWidth: CGFloat = 660
 
     @FocusState private var inputFocused: Bool
     @Environment(\.colorScheme) private var colorScheme
 
     private var dark: Bool { colorScheme == .dark }
 
-    var body: some View {
-        // Both pages are always present in the tree. A custom `PageSlideLayout`
-        // proposes unbounded vertical space to both pages (so each computes
-        // its true intrinsic height — important for the multi-line TextField
-        // on main and the ScrollView/SettingsPanel on settings) and uses the
-        // ACTIVE page's intrinsic height as the layout's own size. The
-        // inactive page is placed off-screen at x=±pageWidth. Only the
-        // layout's .offset is animated — height changes snap so the slide
-        // reads as purely horizontal.
-        PageSlideLayout(settingsActive: settingsOpen, pageWidth: pageWidth) {
-            mainPage
-            settingsPage
+    /// Snapshot of the slash-popup at a given keystroke. `matches` is the
+    /// filtered set of templates the user can pick from; `highlightedIndex`
+    /// is the row that ⏎/Tab will accept. Defined inside `LinterWindow`
+    /// (rather than alongside `SlashMenu`) so the SwiftUI tree owns it
+    /// directly via `@State` without a separate observable wrapper.
+    struct SlashMenuState: Equatable {
+        var filter: String
+        var highlightedIndex: Int
+        var matches: [Template]
+    }
+
+    /// Composed gate used by both `slashMenuActive` and `canSwitchTemplate`.
+    /// Every modal state that hides or replaces the main input field must
+    /// be ANDed in here — if a future state is added (e.g. an onboarding
+    /// sheet), append it.
+    private var mainInputActive: Bool {
+        !settingsOpen && !historyOpen && viewingHistoryEntry == nil && inputFocused
+    }
+
+    /// Run `action` only after the user has either (a) confirmed
+    /// discarding an unsaved draft, or (b) confirmed there's nothing to
+    /// discard. If `draft == nil` or the draft is empty, the action runs
+    /// immediately. Otherwise the action is queued and the
+    /// `confirmingDiscardDraft` alert is raised; clicking Discard
+    /// replays it. This is the single entry point for any navigation
+    /// that should be guarded against draft loss — Settings close,
+    /// template-row tap, "+ New template" tap.
+    private func attemptDiscardingDraft(_ action: @escaping () -> Void) {
+        if let d = draft, d.hasContent {
+            pendingDiscardAction = action
+            confirmingDiscardDraft = true
+        } else {
+            draft = nil
+            action()
         }
-        .offset(x: slideOffset)
+    }
+
+    /// Recompute the slash popup state from the current input text. Bail
+    /// conditions: global-shortcut recording in progress, or text doesn't
+    /// start with `/`. Highlight snaps to an exact case-insensitive name
+    /// match if there is one; otherwise the previous highlight is
+    /// preserved (clamped). When no matches remain, the popup dismisses.
+    ///
+    /// Idempotency: writes to `slashMenu` are gated on actual change so
+    /// re-running the function with the same `newText` doesn't churn
+    /// SwiftUI's render graph. Plain assignment (no `withAnimation`)
+    /// because animating from inside `.onChange(of: text)` while the
+    /// field editor is mid-keystroke caused a stack-overflow render loop
+    /// in v2 dev — the appearing popup is fast enough without animation.
+    private func updateSlashMenu(for newText: String) {
+        if HotkeyRecordingState.shared.isRecording {
+            if slashMenu != nil { slashMenu = nil }
+            return
+        }
+        guard newText.hasPrefix("/") else {
+            if slashMenu != nil { slashMenu = nil }
+            return
+        }
+        let afterSlash = newText.dropFirst()
+        let filter = String(afterSlash.prefix { !$0.isWhitespace })
+        let lowered = filter.lowercased()
+        let matches = store.templates.filter {
+            lowered.isEmpty || $0.name.lowercased().hasPrefix(lowered)
+        }
+        guard !matches.isEmpty else {
+            if slashMenu != nil { slashMenu = nil }
+            return
+        }
+        let highlight: Int
+        if let exact = matches.firstIndex(where: { $0.name.lowercased() == lowered }) {
+            highlight = exact
+        } else {
+            let previous = slashMenu?.highlightedIndex ?? 0
+            highlight = min(max(0, previous), matches.count - 1)
+        }
+        let next = SlashMenuState(
+            filter: filter,
+            highlightedIndex: highlight,
+            matches: matches
+        )
+        if slashMenu != next { slashMenu = next }
+    }
+
+    /// Commit a slash-popup selection. Order matters: switch the active
+    /// template first, then strip the `/foo` prefix from `text` (which
+    /// re-fires `.onChange(of: text)` synchronously and would set
+    /// `slashMenu = nil` on its own), then explicitly clear `slashMenu`
+    /// so the intent is obvious and any second pass through
+    /// `updateSlashMenu` is idempotent. Re-asserts focus so a click on
+    /// a popup row doesn't drop the user out of the input.
+    private func selectSlashTemplate(_ template: Template) {
+        store.selectTemplate(id: template.id)
+        if text.hasPrefix("/") {
+            var rest = text.dropFirst()
+            rest = rest.drop { !$0.isWhitespace }
+            if rest.first == " " { rest = rest.dropFirst() }
+            text = String(rest)
+        }
+        slashMenu = nil
+        inputFocused = true
+    }
+
+    var body: some View {
+        // Vertical reveal: Settings replaces the main column outright at
+        // 760×540 (matching the design's `panel-down` keyframe). The frame
+        // width animates 660 ↔ 760 through the SwiftUI implicit-animation
+        // chain; the panel-side `anchorsTopEdge` keeps the top edge fixed
+        // and re-clamps to `visibleFrame` so a 100pt grow near the right
+        // screen edge doesn't cut off the right side of Settings.
+        ZStack(alignment: .top) {
+            if !settingsOpen {
+                mainPage
+                    .transition(.opacity)
+            } else {
+                SettingsPanel(
+                    store: store,
+                    autoHide: $autoHide,
+                    draft: $draft,
+                    page: $settingsPage,
+                    dark: dark,
+                    attemptDiscardingDraft: attemptDiscardingDraft,
+                    onClose: { setSettingsOpen(false) }
+                )
+                .transition(.asymmetric(
+                    insertion: .move(edge: .top).combined(with: .opacity),
+                    removal: .move(edge: .top).combined(with: .opacity)
+                ))
+            }
+        }
+        .frame(width: settingsOpen ? 760 : mainWidth)
+        .animation(.spring(response: 0.32, dampingFraction: 0.86), value: settingsOpen)
         .clipped()
         .background(
             // Brighter than .regularMaterial: thick material gives a more
@@ -96,9 +257,35 @@ struct LinterWindow: View {
         .padding(8)
         .padding(28)
         .accessibilityIdentifier("Linter.PanelRoot")
+        // Discard-unsaved-changes alert lives at the panel root — fires
+        // on any in-app navigation that would lose draft content (Back,
+        // sidebar tap, "+ New" while drafting). Confirm replays the
+        // queued action; Cancel drops it. Pinned here (not on
+        // SettingsPanel) so the alert host is stable across the
+        // reveal/dismiss transition — otherwise the alert would
+        // disappear with the SettingsPanel before the user could click.
+        .alert("Discard unsaved changes?", isPresented: $confirmingDiscardDraft) {
+            Button("Cancel", role: .cancel) {
+                pendingDiscardAction = nil
+            }
+            Button("Discard", role: .destructive) {
+                let action = pendingDiscardAction
+                pendingDiscardAction = nil
+                draft = nil
+                action?()
+            }
+        } message: {
+            Text("Your new template's name and prompt will be lost.")
+        }
         .onAppear {
             availability = FoundationModelService.shared.availability
             inputFocused = true
+            // Land the right pane on the active template's editor when
+            // Settings opens for the first time (subsequent opens are
+            // re-anchored by `setSettingsOpen`). Done in `.onAppear`
+            // because `selectedTemplateID` is read off the store, which
+            // isn't safe at property-init time.
+            settingsPage = .template(store.selectedTemplateID)
             PanelController.shared.requestFocus = {
                 inputFocused = true
                 // Spotlight-style: when re-summoned with preserved text,
@@ -137,15 +324,24 @@ struct LinterWindow: View {
                 submittedThisSession = false
                 result = nil
                 settingsOpen = false
-                slideOffset = 0
                 historyOpen = false
                 viewingHistoryEntry = nil
+                slashMenu = nil
+                // Drop any in-progress new-template draft on hide. The
+                // user can't see it after the panel closes anyway, and
+                // re-summoning into a stale draft is more confusing
+                // than starting fresh.
+                draft = nil
+                pendingDiscardAction = nil
+                confirmingDiscardDraft = false
                 cancelLint()
             }
         }
         .background(
             CommandKeyMonitor(
                 inputFocused: inputFocused,
+                canSwitchTemplate: mainInputActive,
+                slashMenuActive: slashMenu != nil && mainInputActive,
                 onSubmit: { submit() },
                 onHistory: {
                     setSettingsOpen(false)
@@ -153,18 +349,59 @@ struct LinterWindow: View {
                     // — re-opening should land on the list, not stay
                     // pinned to the previously-viewed entry.
                     viewingHistoryEntry = nil
+                    slashMenu = nil
                     historyOpen.toggle()
                 },
                 onEscape: {
                     // Cascade Esc: detail-view → history list → close
                     // history → close settings → dismiss result → hide
                     // panel. Each level peels off the most recently
-                    // surfaced overlay.
+                    // surfaced overlay. Slash popup Esc is handled
+                    // upstream by CommandKeyMonitor's slash branch — by
+                    // the time we get here, the popup is already gone.
                     if viewingHistoryEntry != nil { viewingHistoryEntry = nil }
                     else if historyOpen { historyOpen = false }
-                    else if settingsOpen { setSettingsOpen(false) }
+                    else if settingsOpen {
+                        // Same draft-discard guard as the Back button —
+                        // Esc inside Settings shouldn't silently throw
+                        // away an unsaved draft.
+                        attemptDiscardingDraft { setSettingsOpen(false) }
+                    }
                     else if result != nil { result = nil }
                     else { PanelController.shared.hide() }
+                },
+                onSelectTemplate: { index in
+                    let prevID = store.selectedTemplateID
+                    store.selectTemplate(at: index)
+                    // Only fire the badge pulse when the index actually
+                    // resolved to a different template — `selectTemplate(at:)`
+                    // silently no-ops past the end, so an out-of-range
+                    // ⌘5 with 3 templates shouldn't pulse.
+                    if store.selectedTemplateID != prevID {
+                        justSwitchedTemplate = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                            justSwitchedTemplate = false
+                        }
+                    }
+                },
+                onSlashUp: {
+                    guard var m = slashMenu, m.highlightedIndex > 0 else { return }
+                    m.highlightedIndex -= 1
+                    slashMenu = m
+                },
+                onSlashDown: {
+                    guard var m = slashMenu,
+                          m.highlightedIndex < m.matches.count - 1 else { return }
+                    m.highlightedIndex += 1
+                    slashMenu = m
+                },
+                onSlashAccept: {
+                    guard let m = slashMenu,
+                          m.matches.indices.contains(m.highlightedIndex) else { return }
+                    selectSlashTemplate(m.matches[m.highlightedIndex])
+                },
+                onSlashDismiss: {
+                    slashMenu = nil
                 }
             )
         )
@@ -173,14 +410,41 @@ struct LinterWindow: View {
     @ViewBuilder
     private var mainPage: some View {
         VStack(spacing: 0) {
+            // Tab strip — visible only when there's more than one template.
+            // Hidden in the single-template world so the badge in the input
+            // row carries the full active-template signal on its own.
+            if store.templates.count > 1 {
+                TemplateTabsView(store: store, dark: dark)
+            }
+
             InputRow(
                 text: $text,
                 dark: dark,
                 settingsOpen: settingsOpen,
                 isFocused: $inputFocused,
+                template: store.activeTemplate,
+                justSwitched: justSwitchedTemplate,
                 onSubmit: submit,
                 onToggleSettings: { setSettingsOpen(!settingsOpen) }
             )
+            .onChange(of: text) { _, newValue in
+                updateSlashMenu(for: newValue)
+            }
+
+            // Slash popup. Rendered as a sibling row inside the page (NOT
+            // as a SwiftUI `.overlay(...)`) because the panel's
+            // NSHostingController uses `.preferredContentSize` sizing —
+            // overlays don't contribute to that, so an overlay-anchored
+            // popup would render past the panel's visible bounds when the
+            // input is empty. Sibling-row placement lets `anchorsTopEdge`
+            // grow the panel downward to fit, the same mechanic that
+            // handles result/diff/settings expansion today.
+            if let menu = slashMenu {
+                SlashMenu(state: menu, dark: dark, onPick: selectSlashTemplate)
+                    .padding(.top, 4)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 4)
+            }
 
             // Only surface the on-device-unavailable bar when the on-device
             // backend is actually the active one. With Claude selected, the
@@ -214,17 +478,19 @@ struct LinterWindow: View {
                             // for that entry; the "Use again" button inside
                             // the detail view handles the load-into-input
                             // path that this callback used to perform.
+                            slashMenu = nil
                             viewingHistoryEntry = entry
                         },
                         onClear: { history.clear() },
                         onClose: {
+                            slashMenu = nil
                             historyOpen = false
                             viewingHistoryEntry = nil
                         }
                     )
                 }
             } else if thinking {
-                ThinkingBar(dark: dark)
+                ThinkingBar(dark: dark, descriptor: thinkingDescriptor)
             } else if let r = result {
                 if r.stats.added == 0 && r.stats.removed == 0 {
                     if let issue = r.issue {
@@ -302,64 +568,18 @@ struct LinterWindow: View {
         }
     }
 
-    @ViewBuilder
-    private var settingsPage: some View {
-        VStack(spacing: 0) {
-            // Header — back button + title. The back button is the symmetric
-            // counterpart to the gear in the input row: it returns the user
-            // to the main page with a reverse slide.
-            HStack(spacing: 8) {
-                Button { setSettingsOpen(false) } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "chevron.left")
-                            .font(.system(size: 12, weight: .semibold))
-                        Text("Back")
-                            .font(.system(size: 13, weight: .medium))
-                    }
-                    .foregroundStyle(Palette.text(dark))
-                    .padding(.horizontal, 10).padding(.vertical, 6)
-                    .background(
-                        RoundedRectangle(cornerRadius: 7)
-                            .fill(Palette.surface(dark))
-                            .overlay(RoundedRectangle(cornerRadius: 7).stroke(Palette.divider(dark), lineWidth: 0.5))
-                    )
-                }
-                .buttonStyle(.plain)
-                .keyboardShortcut(.escape, modifiers: [])
-
-                Spacer()
-                Text("Settings")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Palette.text(dark))
-                Spacer()
-                // Width-balance the Back button so the title sits centered.
-                Color.clear.frame(width: 70, height: 1)
-            }
-            .padding(.horizontal, 14).padding(.vertical, 12)
-            .overlay(alignment: .bottom) {
-                Rectangle().fill(Palette.divider(dark)).frame(height: 1)
-            }
-
-            ScrollView {
-                SettingsPanel(
-                    store: store,
-                    autoHide: $autoHide,
-                    dark: dark
-                )
-            }
-            .frame(maxHeight: settingsScrollMax)
-            .background(Palette.footerBg(dark))
-        }
-    }
-
-    /// Single entry point for opening / closing the settings page. Snaps the
-    /// container's height (via settingsOpen) so the panel resizes instantly,
-    /// then animates only the X-offset over 0.28s.
+    /// Single entry point for opening / closing the settings page. Animation
+    /// is owned by the `body` `ZStack`'s `.animation(value: settingsOpen)`,
+    /// so this just flips the bool plus side-effects: cancel any in-flight
+    /// lint (so a stale result doesn't land into a settings-open state),
+    /// drop the slash popup, and reset the route to the active template.
     private func setSettingsOpen(_ open: Bool) {
-        settingsOpen = open
-        withAnimation(.easeInOut(duration: 0.28)) {
-            slideOffset = open ? -pageWidth : 0
+        if open {
+            slashMenu = nil
+            cancelLint()
+            settingsPage = .template(store.selectedTemplateID)
         }
+        settingsOpen = open
     }
 
     /// Hard cap on input length. Below this, the whole pipeline runs comfortably.
@@ -391,6 +611,16 @@ struct LinterWindow: View {
             showToast("Text is too long (max \(Self.maxInputCharacters.formatted()) characters).")
             return
         }
+        // Refuse to lint with a whitespace-only template body. An empty
+        // system prompt lets the model freelance like a chat assistant
+        // (preambles, follow-up questions) — the hallucination guard
+        // catches it and falls back to no-op, but the user pays seconds
+        // of latency for nothing. Surface the problem instead.
+        let activeTemplate = store.activeTemplate
+        guard !activeTemplate.instructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            showToast("Template \"\(activeTemplate.name)\" has no instructions. Set them in Settings.")
+            return
+        }
         // The on-device-availability gate only applies when on-device is
         // the active backend. If the user has opted into a cloud provider
         // in Advanced Mode, we proceed regardless of Apple Intelligence's
@@ -414,11 +644,33 @@ struct LinterWindow: View {
             guard case .available = availability else { return }
         }
         cancelLint()
+        // Dismiss the slash popup if it was visible — ⌘⏎ during the popup
+        // is a pass-through submit (the literal `/foo bar` text gets linted
+        // as-is), but the popup itself shouldn't keep floating between
+        // InputRow and the thinking spinner / result bar that appears
+        // below it. Without this clear, the popup state survives until
+        // accept, since text isn't replaced on submit.
+        slashMenu = nil
         // History capture moved to handleAccept — we only persist lints the
         // user actually accepted, with the polished output and backend
         // label alongside the original.
         submittedThisSession = true
-        let instructions = store.instructions
+        let instructions = activeTemplate.instructions
+        let templateName = activeTemplate.name
+        lastSubmittedTemplateID = activeTemplate.id
+        // Snapshot the spinner descriptor from the backend we're actually
+        // dispatching to. Reading from `backend` (the local) instead of
+        // `store.activeBackend` covers the .onDevice fallback when the
+        // user picked a cloud provider but its key is missing — the bar
+        // shows the *real* runtime backend, not the user's selection.
+        switch backend {
+        case .onDevice:
+            thinkingDescriptor = .onDevice
+        case .claude(_, let model):
+            thinkingDescriptor = .claude(model)
+        case .openai(_, let model):
+            thinkingDescriptor = .openai(model)
+        }
         let toLint = text
         thinking = true
         result = nil
@@ -428,7 +680,8 @@ struct LinterWindow: View {
                 let r = try await FoundationModelService.shared.lint(
                     text: toLint,
                     instructions: instructions,
-                    backend: backend
+                    backend: backend,
+                    templateName: templateName
                 )
                 if Task.isCancelled { return }
                 await MainActor.run {
@@ -480,7 +733,8 @@ struct LinterWindow: View {
         history.recordAccepted(
             original: r.input,
             polished: r.output,
-            backendLabel: backendLabel
+            backendLabel: backendLabel,
+            templateID: lastSubmittedTemplateID
         )
 
         if autoHide {
@@ -840,22 +1094,29 @@ private struct FooterHint: View {
                 KbdLabel(text: "↩", dark: dark)
                 Text("Polish")
             }
+            // ⌘1-N hint only when there's actually more than one
+            // template — single-template users have nothing to switch
+            // to, so the hint would be visual noise.
+            if store.templates.count > 1 {
+                HStack(spacing: 5) {
+                    KbdLabel(text: "⌘", dark: dark)
+                    KbdLabel(text: "1-N", dark: dark)
+                    Text("Switch")
+                }
+            }
             HStack(spacing: 5) {
                 KbdLabel(text: "⌘", dark: dark)
                 KbdLabel(text: "H", dark: dark)
                 Text("History")
             }
             Spacer()
-            HStack(spacing: 5) {
-                Text("AI makes mistakes, always check results")
-                Text("·")
-                // BackendBadge renders the lock/cloud glyph + privacy
-                // framing ("Private · on-device" / "Cloud · Haiku 4.5"),
-                // and on cloud backends becomes a clickable model picker
-                // so the user can switch models without leaving the
-                // panel.
-                BackendBadge(store: store, style: .privacyFramed, dark: dark)
-            }
+            // BackendBadge renders the lock/cloud glyph + privacy
+            // framing ("Private · on-device" / "Cloud · Haiku 4.5"),
+            // and on cloud backends becomes a clickable model picker
+            // so the user can switch models without leaving the
+            // panel. The active-template indicator was removed in v2 —
+            // the input-row badge + tab strip already carry that signal.
+            BackendBadge(store: store, style: .privacyFramed, dark: dark)
         }
         .font(.system(size: 11))
         .foregroundStyle(Palette.sub(dark))
@@ -872,30 +1133,58 @@ private struct FooterHint: View {
 /// `inputFocused` is false.
 private struct CommandKeyMonitor: NSViewRepresentable {
     var inputFocused: Bool
+    var canSwitchTemplate: Bool
+    var slashMenuActive: Bool
     var onSubmit: () -> Void
     var onHistory: () -> Void
     var onEscape: () -> Void
+    var onSelectTemplate: (Int) -> Void
+    var onSlashUp: () -> Void
+    var onSlashDown: () -> Void
+    var onSlashAccept: () -> Void
+    var onSlashDismiss: () -> Void
 
     func makeNSView(context: Context) -> NSView {
         let v = MonitorView()
         v.inputFocused = inputFocused
+        v.canSwitchTemplate = canSwitchTemplate
+        v.slashMenuActive = slashMenuActive
         v.onSubmit = onSubmit
         v.onHistory = onHistory
         v.onEscape = onEscape
+        v.onSelectTemplate = onSelectTemplate
+        v.onSlashUp = onSlashUp
+        v.onSlashDown = onSlashDown
+        v.onSlashAccept = onSlashAccept
+        v.onSlashDismiss = onSlashDismiss
         return v
     }
     func updateNSView(_ v: NSView, context: Context) {
         guard let v = v as? MonitorView else { return }
         v.inputFocused = inputFocused
+        v.canSwitchTemplate = canSwitchTemplate
+        v.slashMenuActive = slashMenuActive
         v.onSubmit = onSubmit
         v.onHistory = onHistory
         v.onEscape = onEscape
+        v.onSelectTemplate = onSelectTemplate
+        v.onSlashUp = onSlashUp
+        v.onSlashDown = onSlashDown
+        v.onSlashAccept = onSlashAccept
+        v.onSlashDismiss = onSlashDismiss
     }
     final class MonitorView: NSView {
         var inputFocused: Bool = false
+        var canSwitchTemplate: Bool = false
+        var slashMenuActive: Bool = false
         var onSubmit: (() -> Void)?
         var onHistory: (() -> Void)?
         var onEscape: (() -> Void)?
+        var onSelectTemplate: ((Int) -> Void)?
+        var onSlashUp: (() -> Void)?
+        var onSlashDown: (() -> Void)?
+        var onSlashAccept: (() -> Void)?
+        var onSlashDismiss: (() -> Void)?
         private var monitor: Any?
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
@@ -904,9 +1193,52 @@ private struct CommandKeyMonitor: NSViewRepresentable {
                     guard let self else { return event }
                     // While the user is recording a new global shortcut, pass
                     // every key event through so the recorder can capture
-                    // chords like ⌘+Return that we'd otherwise consume.
+                    // chords like ⌘+Return that we'd otherwise consume. Wins
+                    // over every branch below — including the slash popup,
+                    // so arrow keys / Tab inside the recorder aren't eaten.
                     if HotkeyRecordingState.shared.isRecording {
                         return event
+                    }
+                    // Slash popup keyboard. Runs before ⌘1..⌘9 / ⌘⏎ / Esc
+                    // so the popup's arrow / tab / enter / esc all go to it
+                    // when visible. Plain modifiers only — ⌘⏎ falls through
+                    // to the submit branch (Slack-style override that
+                    // submits without picking a template). The window's
+                    // self-window check guards against another window's
+                    // first responder driving popup actions while our
+                    // panel is layered behind.
+                    if self.slashMenuActive,
+                       event.modifierFlags
+                        .intersection([.command, .shift, .option, .control])
+                        .isEmpty,
+                       let win = event.window, win === self.window {
+                        switch event.keyCode {
+                        case 126: self.onSlashUp?(); return nil      // up
+                        case 125: self.onSlashDown?(); return nil    // down
+                        case 36, 76, 48: self.onSlashAccept?(); return nil  // return / numpad / tab
+                        case 53: self.onSlashDismiss?(); return nil  // esc
+                        default: break
+                        }
+                    }
+                    // ⌘1..⌘9 → switch active template by index. Local-only;
+                    // no global registration. Match the layout-independence
+                    // pattern used by the ⌘H branch below — derive the digit
+                    // from `charactersIgnoringModifiers`, not a raw keyCode,
+                    // so Dvorak/Colemak/QWERTZ users get the same behavior.
+                    // Gated on canSwitchTemplate so ⌘1 typed inside the
+                    // Settings prompt-body editor stays a normal digit
+                    // keystroke, and on `event.window === self.window` so
+                    // we never steal digits from another window.
+                    if self.canSwitchTemplate,
+                       event.modifierFlags
+                        .intersection([.command, .shift, .option, .control]) == .command,
+                       let chars = event.charactersIgnoringModifiers,
+                       chars.count == 1,
+                       let digit = chars.first.flatMap({ $0.wholeNumberValue }),
+                       (1...9).contains(digit),
+                       let win = event.window, win === self.window {
+                        self.onSelectTemplate?(digit - 1)   // ⌘1 → index 0
+                        return nil
                     }
                     // ⌘+Return / ⌘+NumPad-Enter → submit
                     if (event.keyCode == 36 || event.keyCode == 76),
@@ -959,35 +1291,3 @@ private struct CommandKeyMonitor: NSViewRepresentable {
     }
 }
 
-/// Two-page side-by-side layout for the slide transition.
-///
-/// Both pages are always laid out (no conditional rendering, no rebuild
-/// during animation). Each gets an unbounded vertical proposal so the
-/// TextField axis-vertical and the SettingsPanel ScrollView can compute
-/// their true intrinsic heights. The layout's own size is taken from the
-/// active page only, so the panel resizes to whichever page is current.
-private struct PageSlideLayout: Layout {
-    var settingsActive: Bool
-    var pageWidth: CGFloat
-
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let unbounded = ProposedViewSize(width: pageWidth, height: nil)
-        let activeIdx = settingsActive ? 1 : 0
-        guard subviews.indices.contains(activeIdx) else {
-            return CGSize(width: pageWidth, height: 0)
-        }
-        let size = subviews[activeIdx].sizeThatFits(unbounded)
-        return CGSize(width: pageWidth, height: size.height)
-    }
-
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        let unbounded = ProposedViewSize(width: pageWidth, height: nil)
-        for (idx, sv) in subviews.enumerated() {
-            let xOffset: CGFloat = (idx == 0) ? 0 : pageWidth
-            sv.place(
-                at: CGPoint(x: bounds.minX + xOffset, y: bounds.minY),
-                proposal: unbounded
-            )
-        }
-    }
-}

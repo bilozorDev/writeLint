@@ -13,18 +13,24 @@ struct PromptEntry: Identifiable, Codable, Equatable, Hashable {
     /// header so the user can tell at a glance which model handled it.
     var backendLabel: String
     var date: Date
+    /// v3+: the template that produced this polish. Optional so v2 entries
+    /// (no template concept) decode forward as `nil`. Recorded for future
+    /// history-detail use; not yet displayed anywhere.
+    var templateID: UUID?
 }
 
 @Observable
 @MainActor
 final class PromptHistory {
-    /// Bumped from `promptHistory.v1` for the schema change adding
-    /// `polished` + `backendLabel`. Old `v1` entries can't be promoted (we
-    /// never recorded the polished output back then), so they're dropped on
-    /// first launch under the new schema. The `v1` key is also removed
-    /// proactively so the prefs file doesn't carry stale data.
-    private static let key = "promptHistory.v2"
-    private static let legacyKey = "promptHistory.v1"
+    /// Bumped from `promptHistory.v2` for the schema change adding
+    /// `templateID`. v2 entries decode forward — `templateID` is optional,
+    /// so a missing JSON key resolves to `nil` — and we re-encode under v3
+    /// on first launch, then drop the v2 key. v1 entries can't be promoted
+    /// (we never recorded the polished output back then), so v1 data is
+    /// dropped on first launch under v2 or later.
+    private static let key = "promptHistory.v3"
+    private static let legacyKey = "promptHistory.v2"
+    private static let veryLegacyKey = "promptHistory.v1"
     private static let maxEntries = 10
     static let shared = PromptHistory()
 
@@ -36,18 +42,41 @@ final class PromptHistory {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        if let data = defaults.data(forKey: Self.key),
-           let decoded = try? JSONDecoder().decode([PromptEntry].self, from: data) {
-            self.entries = decoded
+
+        // Chained read: v3 → corrupt-v3-fallback to v2 → v2-decode + re-encode → empty.
+        // Only remove the v2 key after a successful v3 re-encode so an
+        // encoder failure (extremely unlikely with a flat Codable struct,
+        // but cheap insurance) doesn't wipe history.
+        let loaded: [PromptEntry]
+        if let data = defaults.data(forKey: Self.key) {
+            if let decoded = try? JSONDecoder().decode([PromptEntry].self, from: data) {
+                loaded = decoded
+            } else if let v2Data = defaults.data(forKey: Self.legacyKey),
+                      let decoded = try? JSONDecoder().decode([PromptEntry].self, from: v2Data) {
+                loaded = decoded
+                if let reencoded = try? JSONEncoder().encode(decoded) {
+                    defaults.set(reencoded, forKey: Self.key)
+                    defaults.removeObject(forKey: Self.legacyKey)
+                }
+            } else {
+                loaded = []
+            }
+        } else if let v2Data = defaults.data(forKey: Self.legacyKey),
+                  let decoded = try? JSONDecoder().decode([PromptEntry].self, from: v2Data) {
+            loaded = decoded
+            if let reencoded = try? JSONEncoder().encode(decoded) {
+                defaults.set(reencoded, forKey: Self.key)
+                defaults.removeObject(forKey: Self.legacyKey)
+            }
         } else {
-            self.entries = []
+            loaded = []
         }
-        // One-time cleanup of v1 history. Schema is incompatible — v1 stored
-        // only the original text, with no record of the polished output or
-        // backend, so a v1 entry can't power the new diff-detail view.
-        // `removeObject` on a missing key is harmless, so this is also a
-        // no-op for fresh installs.
-        defaults.removeObject(forKey: Self.legacyKey)
+        self.entries = loaded
+
+        // v1 cleanup is unconditional — schema is incompatible (v1 stored
+        // only the original text, no polished output, no backend label).
+        // `removeObject` on a missing key is harmless.
+        defaults.removeObject(forKey: Self.veryLegacyKey)
     }
 
     /// Record a completed lint that the user accepted. Most recent first.
@@ -57,8 +86,16 @@ final class PromptHistory {
     ///
     /// Capture happens on Accept (not on submit) — that way the history
     /// reflects only the lints the user actually used, and we have the
-    /// polished output + backend label available to store.
-    func recordAccepted(original: String, polished: String, backendLabel: String) {
+    /// polished output + backend label available to store. `templateID`
+    /// is the template the lint *was run with* at submit time, captured
+    /// by the caller alongside the prompt body so a switch between submit
+    /// and accept doesn't mis-attribute the entry.
+    func recordAccepted(
+        original: String,
+        polished: String,
+        backendLabel: String,
+        templateID: UUID? = nil
+    ) {
         // Trim before both checking AND storing, so we don't persist
         // surrounding whitespace and re-load it that way next session.
         let trimmed = original.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -71,7 +108,8 @@ final class PromptHistory {
             original: trimmed,
             polished: polished,
             backendLabel: backendLabel,
-            date: Date()
+            date: Date(),
+            templateID: templateID
         )
         var next = [entry] + entries
         if next.count > Self.maxEntries {

@@ -167,29 +167,21 @@ struct SnapshotTests {
         assertSnapshot(of: v, as: .image, named: "result-actions-copied", record: .missing)
     }
 
-    // MARK: SettingsPanel — advanced mode off vs on
+    // MARK: SettingsPanel — full shell snapshot
+    //
+    // v3 dropped the Advanced Mode toggle. The new SettingsPanel is a
+    // 760×540 sidebar+detail shell that always shows the templates list +
+    // active editor. The single snapshot below captures the resting state
+    // landed on the Grammar template's editor — it stands in for the two
+    // v2-era snapshots (advanced-off / advanced-on).
 
-    @Test func settingsPanelAdvancedModeOff() {
+    @Test func settingsPanelDefault() {
         let scratch = ScratchDefaults.make()
         defer { scratch.cleanup() }
         let store = PromptStore(defaults: scratch.defaults)
-        store.advancedMode = false
-        let view = SettingsPanelHarness(store: store, dark: false)
-        let v = host(view, height: 300, dark: false)
-        assertSnapshot(of: v, as: .image, named: "settings-panel-advanced-off", record: .missing)
-    }
-
-    @Test func settingsPanelAdvancedModeOn() {
-        // Advanced mode reveals the prompt editor — the slide-page layout is
-        // invariant-load-bearing per CLAUDE.md, so a snapshot here catches
-        // accidental changes to the editor's height contribution.
-        let scratch = ScratchDefaults.make()
-        defer { scratch.cleanup() }
-        let store = PromptStore(defaults: scratch.defaults)
-        store.advancedMode = true
         let view = SettingsPanelHarness(store: store, dark: false)
         let v = host(view, height: 540, dark: false)
-        assertSnapshot(of: v, as: .image, named: "settings-panel-advanced-on", record: .missing)
+        assertSnapshot(of: v, as: .image, named: "settings-panel-default", record: .missing)
     }
 
     // MARK: HistoryView — empty + populated
@@ -247,7 +239,7 @@ struct SnapshotTests {
     // MARK: ThinkingBar — in-progress state
 
     @Test func thinkingBarLight() {
-        let v = host(ThinkingBar(dark: false), height: 60, dark: false)
+        let v = host(ThinkingBar(dark: false, descriptor: .onDevice), height: 60, dark: false)
         assertSnapshot(of: v, as: .image, named: "thinking-bar-light", record: .missing)
     }
 
@@ -307,11 +299,24 @@ struct InputRowSnapshotHarness: View {
     @FocusState private var focused: Bool
 
     var body: some View {
+        // v3 InputRow takes a `Template` value + a `justSwitched` bool.
+        // Build a freestanding Grammar-shaped Template so the harness
+        // doesn't need a PromptStore.
+        let template = Template(
+            id: UUID(),
+            name: "Grammar",
+            instructions: "",
+            factoryInstructions: nil,
+            colorHex: "#0A84FF",
+            iconName: "pencil"
+        )
         InputRow(
             text: .constant(text),
             dark: dark,
             settingsOpen: false,
             isFocused: $focused,
+            template: template,
+            justSwitched: false,
             onSubmit: {},
             onToggleSettings: {}
         )
@@ -321,17 +326,34 @@ struct InputRowSnapshotHarness: View {
 }
 
 // MARK: - SettingsPanel harness
-// SettingsPanel needs an `@Bindable` store and a `Binding<Bool>` for autoHide;
-// this harness wires up a local @State so the view can be rendered in
-// isolation without LinterWindow.
+// SettingsPanel needs an `@Bindable` store and a few @Binding members; this
+// harness wires up local @State so the view can be rendered in isolation
+// without LinterWindow.
 
 struct SettingsPanelHarness: View {
     @Bindable var store: PromptStore
     let dark: Bool
     @State private var autoHide: Bool = true
+    @State private var draft: TemplateDraft? = nil
+    @State private var page: SettingsRoute
+
+    init(store: PromptStore, dark: Bool) {
+        self.store = store
+        self.dark = dark
+        // Land on the active template's editor by default — same behavior
+        // as LinterWindow's `setSettingsOpen(true)` path.
+        _page = State(initialValue: .template(store.selectedTemplateID))
+    }
 
     var body: some View {
-        SettingsPanel(store: store, autoHide: $autoHide, dark: dark)
-            .frame(width: 660)
+        SettingsPanel(
+            store: store,
+            autoHide: $autoHide,
+            draft: $draft,
+            page: $page,
+            dark: dark,
+            attemptDiscardingDraft: { action in action() },
+            onClose: {}
+        )
     }
 }

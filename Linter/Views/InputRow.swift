@@ -5,24 +5,34 @@ struct InputRow: View {
     let dark: Bool
     let settingsOpen: Bool
     let isFocused: FocusState<Bool>.Binding
+    let template: Template
+    let justSwitched: Bool
     let onSubmit: () -> Void
     let onToggleSettings: () -> Void
 
     var body: some View {
         HStack(alignment: .top, spacing: 14) {
-            // Static grammar badge — anchored to the top so it stays put as
-            // the text field grows downward. Now that the app is single-
-            // template (just grammar polishing), the icon and color are
-            // baked in instead of pulled from a Template model.
+            // Active-template badge — color + icon driven by the active
+            // `Template`. Pulses (scale + matching halo) when the user
+            // ⌘1..⌘9-switches templates so the change is visible without
+            // looking down at the tab strip. Anchored to the top so it
+            // stays put as the text field grows downward.
             ZStack {
                 RoundedRectangle(cornerRadius: 8)
-                    .fill(Color(hex: "#0A84FF"))
-                Image(systemName: "pencil")
-                    .font(.system(size: 15, weight: .semibold))
+                    .fill(Color(hex: template.colorHex))
+                Image(systemName: TemplateIcon(rawValue: template.iconName)?.systemName ?? "pencil")
+                    .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(.white)
             }
-            .frame(width: 32, height: 32)
+            .frame(width: 30, height: 30)
+            .scaleEffect(justSwitched ? 1.08 : 1.0)
+            .shadow(
+                color: Color(hex: template.colorHex).opacity(justSwitched ? 0.2 : 0),
+                radius: 4
+            )
+            .animation(.spring(response: 0.4, dampingFraction: 0.55), value: justSwitched)
             .padding(.top, 16)
+            .accessibilityLabel("Active template: \(template.name)")
 
             // Native multi-line TextField — auto-grows up to ~10 lines.
             // ⌘+⏎ submits and plain ⏎ inserts a newline; both are routed
@@ -33,7 +43,7 @@ struct InputRow: View {
             // avoids fighting the panel's auto-resize and Writing Tools'
             // affordance windows.
             TextField(
-                "Type or paste text to polish…",
+                "Type or paste text to \(template.name.lowercased())…",
                 text: $text,
                 axis: .vertical
             )

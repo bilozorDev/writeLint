@@ -233,8 +233,25 @@ final class FoundationModelService {
     func lint(
         text: String,
         instructions: String,
-        backend: BackendChoice = .onDevice
+        backend: BackendChoice = .onDevice,
+        templateName: String = ""
     ) async throws -> LintResult {
+        // Single dispatch-level log line so "wrong prompt" complaints are
+        // debuggable from the log alone — without changing any backend's
+        // request body or chunk-level logging. Empty name (the default for
+        // call sites that don't supply one — e.g. integration tests)
+        // prints as `template=""` rather than mangled output. Backend is
+        // logged as a short tag (`on-device` / `claude` / `openai`) so the
+        // line stays readable and never leaks the API key payload from the
+        // associated value.
+        let backendTag: String = {
+            switch backend {
+            case .onDevice: return "on-device"
+            case .claude(_, let model): return "claude:\(model.rawValue)"
+            case .openai(_, let model): return "openai:\(model.rawValue)"
+            }
+        }()
+        lintLog.notice("lint dispatch: backend=\(backendTag, privacy: .public) template=\"\(templateName, privacy: .public)\"")
         switch backend {
         case .onDevice:
             return try await lintOnDevice(text: text, instructions: instructions)
