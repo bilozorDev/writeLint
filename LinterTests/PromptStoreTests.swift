@@ -2,7 +2,7 @@ import Testing
 import Foundation
 @testable import Write_Lint
 
-@Suite("PromptStore — UserDefaults-backed prompt + advanced-mode toggle")
+@Suite("PromptStore — UserDefaults-backed prompt + backend selection")
 @MainActor
 struct PromptStoreTests {
 
@@ -27,7 +27,6 @@ struct PromptStoreTests {
         let store = Self.makeStore(scratch)
         #expect(store.instructions == PromptStore.defaultInstructions)
         #expect(store.activeTemplate.isAtFactory)
-        #expect(store.advancedMode == false)
     }
 
     @Test func loadsExistingInstructionsFromSuite() {
@@ -47,26 +46,17 @@ struct PromptStoreTests {
     @Test func writingInstructionsPersistsToTemplates() throws {
         // The legacy `instructions` setter is a writable computed that
         // routes per-keystroke writes to the active template's body. The
-        // canonical persisted form is the JSON-encoded `templates.v2`
+        // canonical persisted form is the JSON-encoded `templates.v3`
         // array; the legacy `grammarPrompt.v1` key is wiped on init and
         // never written back.
         let scratch = ScratchDefaults.make()
         defer { scratch.cleanup() }
         let store = Self.makeStore(scratch)
         store.instructions = "new prompt"
-        let data = try #require(scratch.defaults.data(forKey: "templates.v2"))
+        let data = try #require(scratch.defaults.data(forKey: "templates.v3"))
         let decoded = try JSONDecoder().decode([Template].self, from: data)
         #expect(decoded.first?.instructions == "new prompt")
         #expect(scratch.defaults.string(forKey: "grammarPrompt.v1") == nil)
-    }
-
-    @Test func writingAdvancedModePersistsToSuite() {
-        let scratch = ScratchDefaults.make()
-        defer { scratch.cleanup() }
-        let store = Self.makeStore(scratch)
-        #expect(store.advancedMode == false)
-        store.advancedMode = true
-        #expect(scratch.defaults.bool(forKey: "advancedMode.v1") == true)
     }
 
     @Test func revertTemplateToFactoryRestoresFactoryPrompt() {
@@ -109,28 +99,7 @@ struct PromptStoreTests {
         #expect(scratch.defaults.object(forKey: "selectedTemplateID.v1") == nil)
     }
 
-    // MARK: provider + model defaults / persistence
-
-    @Test func selectedProviderDefaultsToClaude() {
-        // First-launch and migration-from-Claude-only both land here:
-        // no `cloudProvider.v1` key in defaults → Claude. Matches the
-        // pre-OpenAI behavior so existing users see no observable change.
-        let scratch = ScratchDefaults.make()
-        defer { scratch.cleanup() }
-        let store = Self.makeStore(scratch)
-        #expect(store.selectedProvider == .claude)
-    }
-
-    @Test func selectedProviderPersistsAcrossInits() {
-        let scratch = ScratchDefaults.make()
-        defer { scratch.cleanup() }
-        do {
-            let store = Self.makeStore(scratch)
-            store.selectedProvider = .openai
-        }
-        let reloaded = Self.makeStore(scratch)
-        #expect(reloaded.selectedProvider == .openai)
-    }
+    // MARK: model defaults / persistence
 
     @Test func selectedOpenAIModelDefaultsToGpt41Mini() {
         // Default matches the user's chosen baseline for grammar polish —
@@ -257,7 +226,7 @@ struct PromptStoreTests {
         #expect(store.activeBackend == expected)
     }
 
-    // MARK: selectedBackend persistence + migration
+    // MARK: selectedBackend persistence
 
     @Test func selectedBackendDefaultsToOnDeviceOnFreshInstall() {
         let scratch = ScratchDefaults.make()
@@ -286,73 +255,30 @@ struct PromptStoreTests {
         #expect(reloaded.selectedBackend == .openai)
     }
 
-    @Test func migratesPreBackendKeyInstallWithCloudActive() throws {
-        // Simulate a v1 install: `advancedMode = true`, `cloudProvider.v1
-        // = "claude"`, Claude key in Keychain. The migration in init
-        // should derive `selectedBackend = .claude` so the user's
-        // existing cloud setup keeps working under the new gate model.
+    @Test func selectedBackendV1KeyReadVerbatim() {
+        // v3 retired the legacy `advancedMode + cloudProvider.v1` upgrade
+        // path. The init now does a single explicit read of
+        // `selectedBackend.v1`, no fallback derivation. With a stored value
+        // we expect that exact value out the other side.
         let scratch = ScratchDefaults.make()
         defer { scratch.cleanup() }
-        let service = "linter.tests.migrate.\(UUID().uuidString)"
-        scratch.defaults.set(true, forKey: "advancedMode.v1")
-        scratch.defaults.set("claude", forKey: "cloudProvider.v1")
-        try Keychain.set("legacy-key", service: service, account: "claude-acct")
-        defer { try? Keychain.clear(service: service, account: "claude-acct") }
-
-        let store = PromptStore(
-            defaults: scratch.defaults,
-            keychainService: service,
-            claudeAccount: "claude-acct",
-            openaiAccount: "openai-acct"
-        )
-        #expect(store.selectedBackend == .claude)
-    }
-
-    @Test func migratesPreBackendKeyInstallWithCloudActiveOpenAI() throws {
-        // Symmetric of the Claude case — verify the OpenAI arm of the
-        // migration switch works too. Without this, a refactor that
-        // accidentally wrote `.claude` for both branches of the
-        // CloudProvider switch would slip past the existing coverage.
-        let scratch = ScratchDefaults.make()
-        defer { scratch.cleanup() }
-        let service = "linter.tests.migrate.\(UUID().uuidString)"
-        scratch.defaults.set(true, forKey: "advancedMode.v1")
-        scratch.defaults.set("openai", forKey: "cloudProvider.v1")
-        try Keychain.set("legacy-openai", service: service, account: "openai-acct")
-        defer { try? Keychain.clear(service: service, account: "openai-acct") }
-
-        let store = PromptStore(
-            defaults: scratch.defaults,
-            keychainService: service,
-            claudeAccount: "claude-acct",
-            openaiAccount: "openai-acct"
-        )
+        scratch.defaults.set("openai", forKey: "selectedBackend.v1")
+        let store = Self.makeStore(scratch)
         #expect(store.selectedBackend == .openai)
     }
 
-    @Test func migratesPreBackendKeyInstallWithoutCloudActive() {
-        // Same shape but `advancedMode = false` — the user was on the
-        // on-device path under the old gate. Migration should leave them
-        // there, regardless of any stale cloudProvider value.
-        let scratch = ScratchDefaults.make()
-        defer { scratch.cleanup() }
-        scratch.defaults.set(false, forKey: "advancedMode.v1")
-        scratch.defaults.set("claude", forKey: "cloudProvider.v1")
-        let store = Self.makeStore(scratch)
-        #expect(store.selectedBackend == .onDevice)
-    }
-
-    @Test func persistedSelectedBackendTakesPrecedenceOverMigration() {
-        // If `selectedBackend.v1` is already set, the init must use that
-        // verbatim — the migration branch (which reads the legacy
-        // `advancedMode.v1` + `cloudProvider.v1` pair) is a fallback for
-        // first-launch-under-new-code only. Set conflicting values for
-        // both schemas; the v2 value wins.
+    @Test func legacyAdvancedModeAndCloudProviderKeysAreIgnored() {
+        // Defensive: if a v2-era install still has `advancedMode.v1` and
+        // `cloudProvider.v1` set but no `selectedBackend.v1`, v3 init
+        // should ignore the legacy keys entirely and default to onDevice.
+        // (v2's footer Menu wrote `selectedBackend.v1` whenever the user
+        // picked a non-default backend, so v2 users land in the explicit
+        // read above — anyone hitting THIS branch had been on the
+        // on-device path under v2 too.)
         let scratch = ScratchDefaults.make()
         defer { scratch.cleanup() }
         scratch.defaults.set(true, forKey: "advancedMode.v1")
-        scratch.defaults.set("claude", forKey: "cloudProvider.v1")  // legacy says claude
-        scratch.defaults.set("onDevice", forKey: "selectedBackend.v1")  // v2 says on-device
+        scratch.defaults.set("claude", forKey: "cloudProvider.v1")
         let store = Self.makeStore(scratch)
         #expect(store.selectedBackend == .onDevice)
     }
@@ -461,5 +387,120 @@ struct PromptStoreTests {
         #expect(store.selectedBackend == .onDevice)
         try store.clearOpenAIKey()
         #expect(store.selectedBackend == .onDevice)
+    }
+
+    // MARK: v2 → v3 schema migration
+
+    @Test func migrateV2ToV3_factoryGetsBluePencil_userTemplateGetsNonBlueSparkle() {
+        // Mixed input: factory Grammar plus a user-created template.
+        // Factory must always land on blue + pencil regardless of position;
+        // user templates pull from the non-factory palette and get the
+        // sparkle icon.
+        let factoryID = UUID()
+        let userID = UUID()
+        let legacy: [LegacyTemplateV2] = [
+            LegacyTemplateV2(
+                id: factoryID,
+                name: "Grammar",
+                instructions: "factory body",
+                factoryInstructions: PromptStore.defaultInstructions
+            ),
+            LegacyTemplateV2(
+                id: userID,
+                name: "Friendly",
+                instructions: "warm body",
+                factoryInstructions: nil
+            ),
+        ]
+        let migrated = PromptStore.migrateV2ToV3(legacy)
+        #expect(migrated.count == 2)
+        #expect(migrated[0].id == factoryID)
+        #expect(migrated[0].colorHex == "#0A84FF")
+        #expect(migrated[0].iconName == "pencil")
+        #expect(migrated[1].id == userID)
+        // First non-factory entry should pull the first non-blue swatch.
+        #expect(migrated[1].colorHex == "#5E5CE6")
+        #expect(migrated[1].iconName == "sparkle")
+    }
+
+    @Test func migrateV2ToV3_preservesIdNameInstructionsFactory() {
+        let id = UUID()
+        let legacy = [
+            LegacyTemplateV2(
+                id: id,
+                name: "Custom Name",
+                instructions: "the body",
+                factoryInstructions: "the factory"
+            )
+        ]
+        let migrated = PromptStore.migrateV2ToV3(legacy)
+        let entry = try? #require(migrated.first)
+        #expect(entry?.id == id)
+        #expect(entry?.name == "Custom Name")
+        #expect(entry?.instructions == "the body")
+        #expect(entry?.factoryInstructions == "the factory")
+    }
+
+    @Test func migrateV2ToV3_cyclesNonBluePalette() {
+        // Five user templates exhaust the first five non-blue swatches in
+        // declared order. The migration must NOT reuse the factory blue
+        // — the cycling guarantees user-tab/sidebar visual distinction
+        // from launch.
+        let legacy = (0..<5).map { i in
+            LegacyTemplateV2(
+                id: UUID(),
+                name: "T\(i)",
+                instructions: "body \(i)",
+                factoryInstructions: nil
+            )
+        }
+        let migrated = PromptStore.migrateV2ToV3(legacy)
+        #expect(migrated.map(\.colorHex) == [
+            "#5E5CE6", "#FF9F0A", "#30D158", "#FF453A", "#BF5AF2"
+        ])
+        // Every entry should be sparkle-iconed by default.
+        for entry in migrated {
+            #expect(entry.iconName == "sparkle")
+        }
+    }
+
+    @Test func init_migratesV2DataAndClearsLegacyKey() throws {
+        // Simulate a v2 install: write the legacy `templates.v2` blob,
+        // then construct a fresh PromptStore against the same defaults.
+        // After init: `templates.v3` must be present, `templates.v2`
+        // gone, and the in-memory templates carry the v3 fields.
+        let scratch = ScratchDefaults.make()
+        defer { scratch.cleanup() }
+        let factoryID = UUID()
+        let userID = UUID()
+        let legacy: [LegacyTemplateV2] = [
+            LegacyTemplateV2(
+                id: factoryID,
+                name: "Grammar",
+                instructions: PromptStore.defaultInstructions,
+                factoryInstructions: PromptStore.defaultInstructions
+            ),
+            LegacyTemplateV2(
+                id: userID,
+                name: "Friendly",
+                instructions: "warm",
+                factoryInstructions: nil
+            ),
+        ]
+        let v2Data = try JSONEncoder().encode(legacy)
+        scratch.defaults.set(v2Data, forKey: "templates.v2")
+
+        let store = Self.makeStore(scratch)
+        #expect(store.templates.count == 2)
+        #expect(store.templates[0].id == factoryID)
+        #expect(store.templates[0].colorHex == "#0A84FF")
+        #expect(store.templates[0].iconName == "pencil")
+        #expect(store.templates[1].id == userID)
+        #expect(store.templates[1].colorHex == "#5E5CE6")
+        #expect(store.templates[1].iconName == "sparkle")
+
+        // Persistence sides match: v3 written, v2 cleared.
+        #expect(scratch.defaults.data(forKey: "templates.v3") != nil)
+        #expect(scratch.defaults.data(forKey: "templates.v2") == nil)
     }
 }

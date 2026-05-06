@@ -55,7 +55,12 @@ final class FloatingPanel: NSPanel {
 
     /// Keep the top edge and horizontal center stationary across content-size
     /// changes so the visible card doesn't shift in any direction when the
-    /// SwiftUI tree's intrinsic size changes.
+    /// SwiftUI tree's intrinsic size changes. After the recentre, clamp the
+    /// resulting frame inside the screen's `visibleFrame` so that growing
+    /// from 660pt to 760pt (Settings open) doesn't push the panel off the
+    /// right edge when the user has dragged it close to one. Same on the
+    /// vertical axis: a tall settings page can't fall off the bottom of
+    /// the screen if the panel was anchored low.
     override func setContentSize(_ size: NSSize) {
         guard anchorsTopEdge, isVisible else {
             super.setContentSize(size)
@@ -64,9 +69,15 @@ final class FloatingPanel: NSPanel {
         let oldTopY = frame.origin.y + frame.size.height
         let oldCenterX = frame.origin.x + frame.size.width / 2
         super.setContentSize(size)
-        var f = frame
-        f.origin.y = oldTopY - f.size.height
-        f.origin.x = oldCenterX - f.size.width / 2
-        setFrameOrigin(f.origin)
+        var newOrigin = frame.origin
+        newOrigin.y = oldTopY - frame.size.height
+        newOrigin.x = oldCenterX - frame.size.width / 2
+        if let visible = (screen ?? NSScreen.main)?.visibleFrame {
+            let maxX = max(visible.minX, visible.maxX - frame.size.width)
+            let maxY = max(visible.minY, visible.maxY - frame.size.height)
+            newOrigin.x = min(max(newOrigin.x, visible.minX), maxX)
+            newOrigin.y = min(max(newOrigin.y, visible.minY), maxY)
+        }
+        setFrameOrigin(newOrigin)
     }
 }

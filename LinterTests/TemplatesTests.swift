@@ -80,10 +80,10 @@ struct TemplatesTests {
         #expect(reloaded.selectedTemplateID == firstID)
     }
 
-    @Test func templatesV2WinsWhenBothV1AndV2Exist() throws {
-        // Downgrade-replay scenario: user is on v2, downgrades to v1.0,
+    @Test func templatesV3WinsWhenBothV1AndV3Exist() throws {
+        // Downgrade-replay scenario: user is on v3, downgrades to v1.0,
         // edits the prompt (v1 writes grammarPrompt.v1), upgrades back to
-        // v2. `templates.v2` already exists from the first v2 launch and
+        // v3. `templates.v3` already exists from the first v3 launch and
         // takes precedence; the user's v1-era edits are dropped. v1 key
         // cleaned up unconditionally.
         let scratch = ScratchDefaults.make()
@@ -91,23 +91,25 @@ struct TemplatesTests {
         let preserved = Template(
             id: UUID(),
             name: "Preserved",
-            instructions: "v2 body",
-            factoryInstructions: PromptStore.defaultInstructions
+            instructions: "v3 body",
+            factoryInstructions: PromptStore.defaultInstructions,
+            colorHex: "#0A84FF",
+            iconName: "pencil"
         )
         let data = try JSONEncoder().encode([preserved])
-        scratch.defaults.set(data, forKey: "templates.v2")
+        scratch.defaults.set(data, forKey: "templates.v3")
         scratch.defaults.set("v1 edits should be dropped", forKey: "grammarPrompt.v1")
 
         let store = Self.makeStore(scratch)
         #expect(store.templates.count == 1)
         #expect(store.templates[0].name == "Preserved")
-        #expect(store.templates[0].instructions == "v2 body")
+        #expect(store.templates[0].instructions == "v3 body")
         #expect(scratch.defaults.string(forKey: "grammarPrompt.v1") == nil)
     }
 
     @Test func staleSelectedTemplateIDSelfHealsToFirstTemplate() throws {
         // If `selectedTemplateID.v2` references a UUID not in the loaded
-        // `templates.v2` array (corrupt prefs or interrupted didSet
+        // `templates.v3` array (corrupt prefs or interrupted didSet
         // between two writes), init falls back to templates[0] and
         // re-persists the corrected ID.
         let scratch = ScratchDefaults.make()
@@ -116,10 +118,12 @@ struct TemplatesTests {
             id: UUID(),
             name: "Grammar",
             instructions: "x",
-            factoryInstructions: PromptStore.defaultInstructions
+            factoryInstructions: PromptStore.defaultInstructions,
+            colorHex: "#0A84FF",
+            iconName: "pencil"
         )
         let data = try JSONEncoder().encode([real])
-        scratch.defaults.set(data, forKey: "templates.v2")
+        scratch.defaults.set(data, forKey: "templates.v3")
         scratch.defaults.set(UUID().uuidString, forKey: "selectedTemplateID.v2")
 
         let store = Self.makeStore(scratch)
@@ -298,20 +302,27 @@ struct TemplatesTests {
     // MARK: defaultNameForNewTemplate
 
     @Test func defaultNamePicksSmallestUnusedSuffix() {
-        let base = Template(
-            id: UUID(),
-            name: "Grammar",
-            instructions: "",
-            factoryInstructions: nil
-        )
-        let nt1 = Template(id: UUID(), name: "New template", instructions: "", factoryInstructions: nil)
-        let nt2 = Template(id: UUID(), name: "New template 2", instructions: "", factoryInstructions: nil)
+        // Color/icon are required v3 fields but irrelevant to the
+        // name-suffix logic — pick any pair to satisfy the type system.
+        func t(_ name: String) -> Template {
+            Template(
+                id: UUID(),
+                name: name,
+                instructions: "",
+                factoryInstructions: nil,
+                colorHex: "#5E5CE6",
+                iconName: "sparkle"
+            )
+        }
+        let base = t("Grammar")
+        let nt1 = t("New template")
+        let nt2 = t("New template 2")
 
         #expect(PromptStore.defaultNameForNewTemplate(in: [base]) == "New template")
         #expect(PromptStore.defaultNameForNewTemplate(in: [base, nt1]) == "New template 2")
         #expect(PromptStore.defaultNameForNewTemplate(in: [base, nt1, nt2]) == "New template 3")
         // Holes don't fill — "New template 2" is taken even if "New template" got renamed.
-        let renamedBase = Template(id: UUID(), name: "Renamed", instructions: "", factoryInstructions: nil)
+        let renamedBase = t("Renamed")
         #expect(PromptStore.defaultNameForNewTemplate(in: [renamedBase, nt2]) == "New template")
     }
 }

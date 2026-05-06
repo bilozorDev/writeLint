@@ -68,21 +68,25 @@ struct LinterWindow: View {
     /// Drives the destructive-role discard alert.
     @State private var confirmingDiscardDraft = false
 
-    /// X-offset of the page group. Animated via `withAnimation` in the
-    /// open/close helpers below — kept separate from `settingsOpen` so the
-    /// container's height (which derives from settingsOpen) snaps instantly
-    /// while only the slide animates. Otherwise the simultaneous height grow
-    /// + horizontal slide reads as a diagonal sweep.
-    @State private var slideOffset: CGFloat = 0
+    /// Active right-pane route inside Settings — which template's editor
+    /// (or which system page) is showing on the detail side. Initialized
+    /// to a placeholder UUID; corrected on `.onAppear` (and again every
+    /// time Settings opens) to point at the user's currently-active
+    /// template so the user lands on something meaningful.
+    @State private var settingsPage: SettingsRoute = .template(UUID())
 
-    /// Hard cap on the scrollable area inside settings — passed to the
-    /// settings page so its ScrollView clamps internally.
-    private let settingsScrollMax: CGFloat = 540
+    /// True for ~600ms after a ⌘1..⌘9 template switch — drives the
+    /// active-template badge's spring pulse in `InputRow` so the user
+    /// sees the change. Reset to false on a single-shot timer; if the
+    /// user mashes ⌘N the timer is just rescheduled, no leak risk
+    /// because we only ever read this state from the main actor.
+    @State private var justSwitchedTemplate: Bool = false
 
-    /// Width of each page in the slide layout. Single source of truth for
-    /// `PageSlideLayout(pageWidth:)` and the settings-open `slideOffset`,
-    /// which must stay in lock-step or the inactive page peeks through.
-    private let pageWidth: CGFloat = 660
+    /// Width of the main page (input/result/footer). Settings has its own
+    /// 760pt frame baked into `SettingsPanel` so we don't propagate it
+    /// through here — the body's `.frame(width:)` chooses between
+    /// `mainWidth` and `760` based on `settingsOpen`.
+    private let mainWidth: CGFloat = 660
 
     @FocusState private var inputFocused: Bool
     @Environment(\.colorScheme) private var colorScheme
@@ -192,19 +196,34 @@ struct LinterWindow: View {
     }
 
     var body: some View {
-        // Both pages are always present in the tree. A custom `PageSlideLayout`
-        // proposes unbounded vertical space to both pages (so each computes
-        // its true intrinsic height — important for the multi-line TextField
-        // on main and the ScrollView/SettingsPanel on settings) and uses the
-        // ACTIVE page's intrinsic height as the layout's own size. The
-        // inactive page is placed off-screen at x=±pageWidth. Only the
-        // layout's .offset is animated — height changes snap so the slide
-        // reads as purely horizontal.
-        PageSlideLayout(settingsActive: settingsOpen, pageWidth: pageWidth) {
-            mainPage
-            settingsPage
+        // Vertical reveal: Settings replaces the main column outright at
+        // 760×540 (matching the design's `panel-down` keyframe). The frame
+        // width animates 660 ↔ 760 through the SwiftUI implicit-animation
+        // chain; the panel-side `anchorsTopEdge` keeps the top edge fixed
+        // and re-clamps to `visibleFrame` so a 100pt grow near the right
+        // screen edge doesn't cut off the right side of Settings.
+        ZStack(alignment: .top) {
+            if !settingsOpen {
+                mainPage
+                    .transition(.opacity)
+            } else {
+                SettingsPanel(
+                    store: store,
+                    autoHide: $autoHide,
+                    draft: $draft,
+                    page: $settingsPage,
+                    dark: dark,
+                    attemptDiscardingDraft: attemptDiscardingDraft,
+                    onClose: { setSettingsOpen(false) }
+                )
+                .transition(.asymmetric(
+                    insertion: .move(edge: .top).combined(with: .opacity),
+                    removal: .move(edge: .top).combined(with: .opacity)
+                ))
+            }
         }
-        .offset(x: slideOffset)
+        .frame(width: settingsOpen ? 760 : mainWidth)
+        .animation(.spring(response: 0.32, dampingFraction: 0.86), value: settingsOpen)
         .clipped()
         .background(
             // Brighter than .regularMaterial: thick material gives a more
@@ -238,9 +257,35 @@ struct LinterWindow: View {
         .padding(8)
         .padding(28)
         .accessibilityIdentifier("Linter.PanelRoot")
+        // Discard-unsaved-changes alert lives at the panel root — fires
+        // on any in-app navigation that would lose draft content (Back,
+        // sidebar tap, "+ New" while drafting). Confirm replays the
+        // queued action; Cancel drops it. Pinned here (not on
+        // SettingsPanel) so the alert host is stable across the
+        // reveal/dismiss transition — otherwise the alert would
+        // disappear with the SettingsPanel before the user could click.
+        .alert("Discard unsaved changes?", isPresented: $confirmingDiscardDraft) {
+            Button("Cancel", role: .cancel) {
+                pendingDiscardAction = nil
+            }
+            Button("Discard", role: .destructive) {
+                let action = pendingDiscardAction
+                pendingDiscardAction = nil
+                draft = nil
+                action?()
+            }
+        } message: {
+            Text("Your new template's name and prompt will be lost.")
+        }
         .onAppear {
             availability = FoundationModelService.shared.availability
             inputFocused = true
+            // Land the right pane on the active template's editor when
+            // Settings opens for the first time (subsequent opens are
+            // re-anchored by `setSettingsOpen`). Done in `.onAppear`
+            // because `selectedTemplateID` is read off the store, which
+            // isn't safe at property-init time.
+            settingsPage = .template(store.selectedTemplateID)
             PanelController.shared.requestFocus = {
                 inputFocused = true
                 // Spotlight-style: when re-summoned with preserved text,
@@ -279,7 +324,6 @@ struct LinterWindow: View {
                 submittedThisSession = false
                 result = nil
                 settingsOpen = false
-                slideOffset = 0
                 historyOpen = false
                 viewingHistoryEntry = nil
                 slashMenu = nil
@@ -327,7 +371,18 @@ struct LinterWindow: View {
                     else { PanelController.shared.hide() }
                 },
                 onSelectTemplate: { index in
+                    let prevID = store.selectedTemplateID
                     store.selectTemplate(at: index)
+                    // Only fire the badge pulse when the index actually
+                    // resolved to a different template — `selectTemplate(at:)`
+                    // silently no-ops past the end, so an out-of-range
+                    // ⌘5 with 3 templates shouldn't pulse.
+                    if store.selectedTemplateID != prevID {
+                        justSwitchedTemplate = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                            justSwitchedTemplate = false
+                        }
+                    }
                 },
                 onSlashUp: {
                     guard var m = slashMenu, m.highlightedIndex > 0 else { return }
@@ -355,11 +410,20 @@ struct LinterWindow: View {
     @ViewBuilder
     private var mainPage: some View {
         VStack(spacing: 0) {
+            // Tab strip — visible only when there's more than one template.
+            // Hidden in the single-template world so the badge in the input
+            // row carries the full active-template signal on its own.
+            if store.templates.count > 1 {
+                TemplateTabsView(store: store, dark: dark)
+            }
+
             InputRow(
                 text: $text,
                 dark: dark,
                 settingsOpen: settingsOpen,
                 isFocused: $inputFocused,
+                template: store.activeTemplate,
+                justSwitched: justSwitchedTemplate,
                 onSubmit: submit,
                 onToggleSettings: { setSettingsOpen(!settingsOpen) }
             )
@@ -504,82 +568,18 @@ struct LinterWindow: View {
         }
     }
 
-    @ViewBuilder
-    private var settingsPage: some View {
-        VStack(spacing: 0) {
-            // Header — back button + title. The back button is the symmetric
-            // counterpart to the gear in the input row: it returns the user
-            // to the main page with a reverse slide.
-            HStack(spacing: 8) {
-                Button {
-                    attemptDiscardingDraft { setSettingsOpen(false) }
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "chevron.left")
-                            .font(.system(size: 12, weight: .semibold))
-                        Text("Back")
-                            .font(.system(size: 13, weight: .medium))
-                    }
-                    .foregroundStyle(Palette.text(dark))
-                    .padding(.horizontal, 10).padding(.vertical, 6)
-                    .background(
-                        RoundedRectangle(cornerRadius: 7)
-                            .fill(Palette.surface(dark))
-                            .overlay(RoundedRectangle(cornerRadius: 7).stroke(Palette.divider(dark), lineWidth: 0.5))
-                    )
-                }
-                .buttonStyle(.plain)
-                .keyboardShortcut(.escape, modifiers: [])
-
-                Spacer()
-                Text("Settings")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Palette.text(dark))
-                Spacer()
-                // Width-balance the Back button so the title sits centered.
-                Color.clear.frame(width: 70, height: 1)
-            }
-            .padding(.horizontal, 14).padding(.vertical, 12)
-            .overlay(alignment: .bottom) {
-                Rectangle().fill(Palette.divider(dark)).frame(height: 1)
-            }
-
-            ScrollView {
-                SettingsPanel(
-                    store: store,
-                    autoHide: $autoHide,
-                    draft: $draft,
-                    dark: dark,
-                    attemptDiscardingDraft: attemptDiscardingDraft
-                )
-            }
-            .frame(maxHeight: settingsScrollMax)
-            .background(Palette.footerBg(dark))
-        }
-        .alert("Discard unsaved changes?", isPresented: $confirmingDiscardDraft) {
-            Button("Cancel", role: .cancel) {
-                pendingDiscardAction = nil
-            }
-            Button("Discard", role: .destructive) {
-                let action = pendingDiscardAction
-                pendingDiscardAction = nil
-                draft = nil
-                action?()
-            }
-        } message: {
-            Text("Your new template's name and prompt will be lost.")
-        }
-    }
-
-    /// Single entry point for opening / closing the settings page. Snaps the
-    /// container's height (via settingsOpen) so the panel resizes instantly,
-    /// then animates only the X-offset over 0.28s.
+    /// Single entry point for opening / closing the settings page. Animation
+    /// is owned by the `body` `ZStack`'s `.animation(value: settingsOpen)`,
+    /// so this just flips the bool plus side-effects: cancel any in-flight
+    /// lint (so a stale result doesn't land into a settings-open state),
+    /// drop the slash popup, and reset the route to the active template.
     private func setSettingsOpen(_ open: Bool) {
-        if open { slashMenu = nil }
-        settingsOpen = open
-        withAnimation(.easeInOut(duration: 0.28)) {
-            slideOffset = open ? -pageWidth : 0
+        if open {
+            slashMenu = nil
+            cancelLint()
+            settingsPage = .template(store.selectedTemplateID)
         }
+        settingsOpen = open
     }
 
     /// Hard cap on input length. Below this, the whole pipeline runs comfortably.
@@ -1094,36 +1094,29 @@ private struct FooterHint: View {
                 KbdLabel(text: "↩", dark: dark)
                 Text("Polish")
             }
+            // ⌘1-N hint only when there's actually more than one
+            // template — single-template users have nothing to switch
+            // to, so the hint would be visual noise.
+            if store.templates.count > 1 {
+                HStack(spacing: 5) {
+                    KbdLabel(text: "⌘", dark: dark)
+                    KbdLabel(text: "1-N", dark: dark)
+                    Text("Switch")
+                }
+            }
             HStack(spacing: 5) {
                 KbdLabel(text: "⌘", dark: dark)
                 KbdLabel(text: "H", dark: dark)
                 Text("History")
             }
-            // Active template indicator. Pencil glyph + name so the user
-            // knows at a glance which prompt the next lint will run with —
-            // without opening Settings or typing `/` to peek at the popup.
-            // Truncates with tail-mode for very long template names so it
-            // doesn't push the right cluster off-screen.
-            HStack(spacing: 4) {
-                Image(systemName: "square.and.pencil")
-                    .font(.system(size: 10.5))
-                Text(store.activeTemplate.name)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-            }
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Active template: \(store.activeTemplate.name)")
             Spacer()
-            HStack(spacing: 5) {
-                Text("AI makes mistakes, always check results")
-                Text("·")
-                // BackendBadge renders the lock/cloud glyph + privacy
-                // framing ("Private · on-device" / "Cloud · Haiku 4.5"),
-                // and on cloud backends becomes a clickable model picker
-                // so the user can switch models without leaving the
-                // panel.
-                BackendBadge(store: store, style: .privacyFramed, dark: dark)
-            }
+            // BackendBadge renders the lock/cloud glyph + privacy
+            // framing ("Private · on-device" / "Cloud · Haiku 4.5"),
+            // and on cloud backends becomes a clickable model picker
+            // so the user can switch models without leaving the
+            // panel. The active-template indicator was removed in v2 —
+            // the input-row badge + tab strip already carry that signal.
+            BackendBadge(store: store, style: .privacyFramed, dark: dark)
         }
         .font(.system(size: 11))
         .foregroundStyle(Palette.sub(dark))
@@ -1298,35 +1291,3 @@ private struct CommandKeyMonitor: NSViewRepresentable {
     }
 }
 
-/// Two-page side-by-side layout for the slide transition.
-///
-/// Both pages are always laid out (no conditional rendering, no rebuild
-/// during animation). Each gets an unbounded vertical proposal so the
-/// TextField axis-vertical and the SettingsPanel ScrollView can compute
-/// their true intrinsic heights. The layout's own size is taken from the
-/// active page only, so the panel resizes to whichever page is current.
-private struct PageSlideLayout: Layout {
-    var settingsActive: Bool
-    var pageWidth: CGFloat
-
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let unbounded = ProposedViewSize(width: pageWidth, height: nil)
-        let activeIdx = settingsActive ? 1 : 0
-        guard subviews.indices.contains(activeIdx) else {
-            return CGSize(width: pageWidth, height: 0)
-        }
-        let size = subviews[activeIdx].sizeThatFits(unbounded)
-        return CGSize(width: pageWidth, height: size.height)
-    }
-
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        let unbounded = ProposedViewSize(width: pageWidth, height: nil)
-        for (idx, sv) in subviews.enumerated() {
-            let xOffset: CGFloat = (idx == 0) ? 0 : pageWidth
-            sv.place(
-                at: CGPoint(x: bounds.minX + xOffset, y: bounds.minY),
-                proposal: unbounded
-            )
-        }
-    }
-}

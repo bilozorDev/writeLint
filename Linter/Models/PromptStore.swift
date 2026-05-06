@@ -13,9 +13,11 @@ enum LintBackend: String, Equatable, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
-/// Which cloud provider the user has selected in Advanced Mode. The
-/// active backend is `.onDevice` until both (a) Advanced Mode is on AND
-/// (b) the selected provider has a Keychain-stored API key.
+/// Cloud provider identifier — used internally to address the right
+/// Keychain account when configuring API keys, not persisted as
+/// "currently editing" state anymore. (v1 had a `cloudProvider.v1` key
+/// driving a segmented picker in Advanced Mode; v2's AI Provider page
+/// uses card selection on `selectedBackend` directly.)
 enum CloudProvider: String, CaseIterable, Identifiable {
     case claude
     case openai
@@ -108,6 +110,15 @@ struct Template: Codable, Identifiable, Equatable {
     var name: String
     var instructions: String
     var factoryInstructions: String?
+    /// Hex color string (e.g. `"#0A84FF"`) used to tint the active-template
+    /// badge in the input row, the colored dot in the tab strip, and the
+    /// 44pt icon in the Template editor. Decodes from v2 data as the
+    /// non-factory palette default; factory Grammar always migrates to blue.
+    var colorHex: String
+    /// `TemplateIcon` raw value (`pencil`, `spellcheck`, `briefcase`,
+    /// `wave`, `sparkle`) — see `Theme.swift`. Persisted as a string so
+    /// future builds can swap icon sets without bumping the schema.
+    var iconName: String
 
     /// True when this template's body equals its shipped factory text.
     /// User-created templates (`factoryInstructions == nil`) always
@@ -116,6 +127,18 @@ struct Template: Codable, Identifiable, Equatable {
     var isAtFactory: Bool {
         factoryInstructions.map { $0 == instructions } ?? false
     }
+}
+
+/// Pre-v3 template shape (no `colorHex` / `iconName`). Used only to decode
+/// `templates.v2` during the one-time migration. `internal` (rather than
+/// `fileprivate`) so the test target can build a v2 array, persist it
+/// under `templates.v2`, and assert the migration's output deterministically
+/// — no other production code references this type.
+struct LegacyTemplateV2: Codable {
+    var id: UUID
+    var name: String
+    var instructions: String
+    var factoryInstructions: String?
 }
 
 /// Single source of truth for the LLM prompts and the user-facing
@@ -133,14 +156,25 @@ struct Template: Codable, Identifiable, Equatable {
 @Observable
 @MainActor
 final class PromptStore {
-    private static let templatesKey          = "templates.v2"
+    private static let templatesKey          = "templates.v3"
+    private static let legacyTemplatesV2Key  = "templates.v2"
     private static let selectedTemplateIDKey = "selectedTemplateID.v2"
     private static let legacyInstructionsKey = "grammarPrompt.v1"
-    private static let advancedModeKey       = "advancedMode.v1"
     private static let claudeModelKey        = "claudeModel.v1"
     private static let openaiModelKey        = "openaiModel.v1"
-    private static let providerKey           = "cloudProvider.v1"
     private static let backendKey            = "selectedBackend.v1"
+    // v2-era keys retired in v3; never read at runtime, no migration —
+    // leaving the orphan UserDefaults keys is harmless.
+    //   "advancedMode.v1"   (templates always visible now; gate dropped)
+    //   "cloudProvider.v1"  (collapsed onto selectedBackend.v1)
+
+    /// Non-blue palette assigned to user-created (non-factory) templates
+    /// during v2→v3 migration and on `+ New`. Factory Grammar always owns
+    /// `#0A84FF`; no user template should silently clone its blue+pencil.
+    /// Mirrors `Palette.nonFactorySwatches` in Theme.swift — kept here so
+    /// PromptStore doesn't depend on SwiftUI for migration logic.
+    private static let nonFactorySwatches: [String] =
+        ["#5E5CE6", "#FF9F0A", "#30D158", "#FF453A", "#BF5AF2", "#64D2FF", "#FFD60A"]
 
     private let defaults: UserDefaults
     private let keychainService: String
@@ -180,21 +214,6 @@ final class PromptStore {
     var instructions: String {
         get { activeTemplate.instructions }
         set { setInstructions(newValue, for: selectedTemplateID) }
-    }
-
-    /// When true, Settings reveals the prompt editor and Revert button.
-    /// Off by default — most users never see the prompt.
-    var advancedMode: Bool {
-        didSet { defaults.set(advancedMode, forKey: Self.advancedModeKey) }
-    }
-
-    /// Which provider's config section the user is editing in Settings.
-    /// UI-only state — driving the segmented Picker that toggles the
-    /// Claude vs OpenAI key/model pane. Independent of `selectedBackend`
-    /// so the user can configure OpenAI without flipping the active
-    /// backend off Claude.
-    var selectedProvider: CloudProvider {
-        didSet { defaults.set(selectedProvider.rawValue, forKey: Self.providerKey) }
     }
 
     /// User's chosen backend — what the next lint runs against. Driven by
@@ -239,10 +258,6 @@ final class PromptStore {
     /// `.onDevice` so the lint still works. The footer Menu hides
     /// unreachable cloud options, so the user never sees a stale
     /// selection there.
-    ///
-    /// Note: `advancedMode` no longer gates this — a saved API key is
-    /// the gate. `advancedMode` is purely a Settings-UI toggle for
-    /// showing the prompt editor + cloud config sections.
     var activeBackend: LintBackend {
         switch selectedBackend {
         case .onDevice:
@@ -327,16 +342,29 @@ final class PromptStore {
         self.claudeAccount = claudeAccount
         self.openaiAccount = openaiAccount
 
-        // Templates: load v2, else migrate from grammarPrompt.v1, else
-        // seed default. `templates.v2` always wins when both v2 and v1
-        // exist (downgrade-replay scenario: v1 doesn't touch v2 keys, so
-        // v2 data survives a v1 round-trip; v1-era edits made between
-        // round-trips are intentionally dropped on the second v2 launch).
+        // Templates load order: v3 → migrate v2 → migrate v1 (grammarPrompt) → seed.
+        // `templates.v3` always wins when present. Migration from v2 cycles
+        // non-factory templates through Self.nonFactorySwatches by their
+        // position among non-factory entries; factory Grammar always gets
+        // blue+pencil. Encode-before-clear: v2 stays in place if the v3
+        // re-encode somehow fails, so the user never ends up with no templates.
         let loadedTemplates: [Template]
         if let data = defaults.data(forKey: Self.templatesKey),
            let decoded = try? JSONDecoder().decode([Template].self, from: data),
            !decoded.isEmpty {
             loadedTemplates = decoded
+        } else if let v2Data = defaults.data(forKey: Self.legacyTemplatesV2Key),
+                  let v2Decoded = try? JSONDecoder().decode([LegacyTemplateV2].self, from: v2Data),
+                  !v2Decoded.isEmpty {
+            let migrated = Self.migrateV2ToV3(v2Decoded)
+            if let encoded = try? JSONEncoder().encode(migrated) {
+                defaults.set(encoded, forKey: Self.templatesKey)
+                defaults.removeObject(forKey: Self.legacyTemplatesV2Key)
+            }
+            // Promote in-memory regardless of encode success — never leave
+            // the user with no templates. If encode failed, next launch
+            // re-runs the migration from the still-present v2 data.
+            loadedTemplates = migrated
         } else {
             let legacy = defaults.string(forKey: Self.legacyInstructionsKey)
             let seedInstructions: String
@@ -349,7 +377,9 @@ final class PromptStore {
                 id: UUID(),
                 name: "Grammar",
                 instructions: seedInstructions,
-                factoryInstructions: Self.defaultInstructions
+                factoryInstructions: Self.defaultInstructions,
+                colorHex: "#0A84FF",
+                iconName: "pencil"
             )
             loadedTemplates = [grammar]
             if let data = try? JSONEncoder().encode(loadedTemplates) {
@@ -357,8 +387,8 @@ final class PromptStore {
             }
         }
         self.templates = loadedTemplates
-        // Always remove the legacy key — including in the v2-already-present
-        // path, so a stray v1 key from a v1 round-trip gets cleaned up.
+        // Always remove the v1 grammarPrompt key — including in the v3-or-v2
+        // path, so a stray v1 key from a downgrade-replay gets cleaned up.
         defaults.removeObject(forKey: Self.legacyInstructionsKey)
 
         // Selected template ID: load v2 if present and matches a template,
@@ -377,19 +407,6 @@ final class PromptStore {
         self.selectedTemplateID = resolvedSelected
         precondition(!loadedTemplates.isEmpty, "PromptStore.templates must never be empty after init")
 
-        // Locals named `initial*` to avoid shadowing the corresponding
-        // stored properties — Swift requires every stored property to
-        // be initialized before `self` is usable, so the migration block
-        // below has to read these values from locals rather than from
-        // `self.advancedMode` / `self.hasClaudeKey` etc.
-        let initialAdvancedMode = defaults.bool(forKey: Self.advancedModeKey)
-        self.advancedMode = initialAdvancedMode
-        if let raw = defaults.string(forKey: Self.providerKey),
-           let provider = CloudProvider(rawValue: raw) {
-            self.selectedProvider = provider
-        } else {
-            self.selectedProvider = .claude
-        }
         if let raw = defaults.string(forKey: Self.claudeModelKey),
            let model = ClaudeModel(rawValue: raw) {
             self.selectedClaudeModel = model
@@ -407,12 +424,7 @@ final class PromptStore {
         self.hasClaudeKey = initialClaudeKey
         self.hasOpenAIKey = initialOpenAIKey
 
-        self.selectedBackend = Self.resolveInitialBackend(
-            defaults: defaults,
-            advancedMode: initialAdvancedMode,
-            hasClaudeKey: initialClaudeKey,
-            hasOpenAIKey: initialOpenAIKey
-        )
+        self.selectedBackend = Self.resolveInitialBackend(defaults: defaults)
 
         // One-time cleanup of orphaned keys from a different earlier
         // multi-template build. The schema there was incompatible with
@@ -424,36 +436,51 @@ final class PromptStore {
     }
 
     /// Decides what `selectedBackend` should be at init time. New installs
-    /// (no `selectedBackend.v1` key) default to `.onDevice`. Users
-    /// upgrading from the previous schema (where `advancedMode +
-    /// cloudProvider.v1` was the activation gate) get their effective
-    /// pre-upgrade backend preserved: if they had advancedMode on with a
-    /// cloud provider selected and that provider's key in the Keychain,
-    /// they stay on cloud; otherwise on-device.
+    /// (no `selectedBackend.v1` key) default to `.onDevice`; subsequent
+    /// launches read the persisted value back. v3 retired the legacy
+    /// `advancedMode + cloudProvider.v1` upgrade path: the v2 footer Menu
+    /// already wrote `selectedBackend.v1` whenever the user picked a
+    /// non-default backend, so v2 users land in the explicit-read branch.
     ///
     /// Static + parameter-driven so it can be unit-tested without
-    /// constructing a full `PromptStore`. Called from init only — once
-    /// the v2 key is written, subsequent loads bypass the migration
-    /// branch via the explicit `defaults.string(forKey: backendKey)`
-    /// check.
-    private static func resolveInitialBackend(
-        defaults: UserDefaults,
-        advancedMode: Bool,
-        hasClaudeKey: Bool,
-        hasOpenAIKey: Bool
-    ) -> LintBackend {
+    /// constructing a full `PromptStore`.
+    private static func resolveInitialBackend(defaults: UserDefaults) -> LintBackend {
         if let raw = defaults.string(forKey: Self.backendKey),
            let backend = LintBackend(rawValue: raw) {
             return backend
         }
-        guard advancedMode,
-              let raw = defaults.string(forKey: Self.providerKey),
-              let cp = CloudProvider(rawValue: raw) else {
-            return .onDevice
-        }
-        switch cp {
-        case .claude: return hasClaudeKey ? .claude : .onDevice
-        case .openai: return hasOpenAIKey ? .openai : .onDevice
+        return .onDevice
+    }
+
+    /// Map v2-shaped templates into v3 by populating `colorHex` and
+    /// `iconName`. Factory templates (`factoryInstructions != nil`) get
+    /// `#0A84FF` + `pencil` regardless of position. Non-factory templates
+    /// cycle through `nonFactorySwatches` by position-among-non-factory
+    /// and default to `sparkle`. Pure / static for unit-testability —
+    /// `internal` (rather than `fileprivate`) so the test target can
+    /// invoke it directly without round-tripping through UserDefaults.
+    static func migrateV2ToV3(_ legacy: [LegacyTemplateV2]) -> [Template] {
+        var nonFactoryIdx = 0
+        return legacy.map { entry in
+            let isFactory = entry.factoryInstructions != nil
+            let colorHex: String
+            let iconName: String
+            if isFactory {
+                colorHex = "#0A84FF"
+                iconName = "pencil"
+            } else {
+                colorHex = Self.nonFactorySwatches[nonFactoryIdx % Self.nonFactorySwatches.count]
+                iconName = "sparkle"
+                nonFactoryIdx += 1
+            }
+            return Template(
+                id: entry.id,
+                name: entry.name,
+                instructions: entry.instructions,
+                factoryInstructions: entry.factoryInstructions,
+                colorHex: colorHex,
+                iconName: iconName
+            )
         }
     }
 
@@ -488,14 +515,24 @@ final class PromptStore {
     @discardableResult
     func addTemplate(
         name: String? = nil,
-        instructions: String
+        instructions: String,
+        colorHex: String? = nil,
+        iconName: String? = nil
     ) -> UUID {
         let resolvedName = name ?? Self.defaultNameForNewTemplate(in: templates)
+        // Cycle non-factory color by position-among-non-factory so the
+        // sidebar/tab strip stays visually distinguishable. Default icon
+        // is `sparkle` per the design's "+ New" affordance.
+        let nonFactoryCount = templates.lazy.filter { $0.factoryInstructions == nil }.count
+        let resolvedColor = colorHex ?? Self.nonFactorySwatches[nonFactoryCount % Self.nonFactorySwatches.count]
+        let resolvedIcon = iconName ?? "sparkle"
         let t = Template(
             id: UUID(),
             name: resolvedName,
             instructions: instructions,
-            factoryInstructions: nil
+            factoryInstructions: nil,
+            colorHex: resolvedColor,
+            iconName: resolvedIcon
         )
         templates.append(t)
         selectedTemplateID = t.id
@@ -544,6 +581,22 @@ final class PromptStore {
     func setInstructions(_ text: String, for id: UUID) {
         guard let idx = templates.firstIndex(where: { $0.id == id }) else { return }
         templates[idx].instructions = text
+    }
+
+    /// Atomic Save from the new TemplateEditor (batch-on-Save pattern,
+    /// matching the design). Replaces all writable fields of the template
+    /// matched by `updated.id`; preserves `id` and `factoryInstructions`.
+    /// Trims `name`; rejects the save entirely (no-op) if the trimmed
+    /// name is empty so the editor's "Save disabled when name blank"
+    /// constraint isn't bypassed by trailing-whitespace edge cases.
+    func saveTemplate(_ updated: Template) {
+        let trimmed = updated.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        guard let idx = templates.firstIndex(where: { $0.id == updated.id }) else { return }
+        templates[idx].name = trimmed
+        templates[idx].instructions = updated.instructions
+        templates[idx].colorHex = updated.colorHex
+        templates[idx].iconName = updated.iconName
     }
 
     /// Reset a template's body to its shipped factory text. Only
