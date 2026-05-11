@@ -772,6 +772,12 @@ struct LinterWindow: View {
             // confusing, and any keystrokes are wasted work.
             inputFocused = false
             toast = "Copied to clipboard"
+            // Hand focus back NOW (before the 850ms timer), so ⌘V works the
+            // moment the user sees "Copied". The deferred hide() below will
+            // also call restorePreviousApp() but it's a no-op by then —
+            // intentional dual-trigger so non-autoHide dismiss paths
+            // (Esc, hotkey toggle-off) are also covered, via hide() itself.
+            PanelController.shared.restorePreviousApp()
             let stamp = PanelController.shared.sessionStamp
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.85) {
                 guard PanelController.shared.sessionStamp == stamp else { return }

@@ -57,6 +57,15 @@ final class PanelController {
     /// so the work no-ops if a fresh session has begun.
     private(set) var sessionStamp: Int = 0
 
+    /// App that was frontmost when the panel was summoned by hotkey,
+    /// captured before `NSApp.activate` steals focus. Reactivated on
+    /// dismiss so the user can ⌘V into wherever they were typing without
+    /// clicking back. Nil when summoned via the menu-bar item or first-launch
+    /// (those paths don't capture). Cleared synchronously in
+    /// `restorePreviousApp()` so a rapid dismiss/re-summon can't double-
+    /// activate or stomp on a fresh capture.
+    private var previousApp: NSRunningApplication?
+
     private init() {}
 
     func makePanel<Content: View>(@ViewBuilder content: () -> Content) {
@@ -68,22 +77,33 @@ final class PanelController {
         self.panel = p
     }
 
-    func toggle() {
+    func toggle(captureFrontmost: Bool = false) {
         guard let panel else { return }
         if panel.isVisible {
             hide()
         } else {
-            show()
+            show(captureFrontmost: captureFrontmost)
         }
     }
 
-    func show() {
+    func show(captureFrontmost: Bool = false) {
         guard let panel else { return }
         // Already visible → no-op. Without this, a redundant show() (e.g.
         // tapping the menu-bar "Show Write Lint" item while the panel is
         // somehow already on screen) would re-run installDismissMonitors and
         // leak the previous monitor pair.
         if panel.isVisible { return }
+        // Capture the current frontmost app BEFORE `NSApp.activate` below
+        // steals focus, but AFTER the isVisible early-return so a redundant
+        // show() can't overwrite a valid capture with stale state. Skip when
+        // Linter itself is already frontmost (defensive against re-summon
+        // edge cases — restoring "self" would be a no-op anyway).
+        if captureFrontmost {
+            let frontmost = NSWorkspace.shared.frontmostApplication
+            if frontmost?.bundleIdentifier != Bundle.main.bundleIdentifier {
+                previousApp = frontmost
+            }
+        }
         sessionStamp &+= 1
         centerOnActiveScreen()
         NSApp.activate(ignoringOtherApps: true)
@@ -98,6 +118,13 @@ final class PanelController {
 
     func hide() {
         removeDismissMonitors()
+        // Hand focus back BEFORE ordering out so the focus change lands while
+        // the panel is still visible — matches the toast-time path
+        // (`LinterWindow.handleAccept`), where activation precedes the
+        // deferred `hide()`. No-op when `previousApp` is nil, which happens
+        // for non-hotkey summons or when the global mouse monitor / toast-
+        // time call already cleared it.
+        restorePreviousApp()
         panel?.orderOut(nil)
         // Defer the state-clearing closure to the next runloop turn so it
         // never re-enters AppKit/SwiftUI mid-update if `hide()` was called
@@ -111,10 +138,29 @@ final class PanelController {
         }
     }
 
+    /// Reactivate the app that was frontmost before the panel was summoned,
+    /// then clear the capture. Called from `hide()` for the standard dismiss
+    /// paths (Esc, hotkey toggle-off, accept-without-autoHide). Called
+    /// directly from `LinterWindow.handleAccept` on the autoHide path so
+    /// focus returns at toast-show time — that lets the user ⌘V immediately
+    /// while the "Copied" toast is still visible briefly over the restored
+    /// app. Synchronous clear; second invocation is a no-op.
+    func restorePreviousApp() {
+        // `activate()` (no-arg, macOS 14+) returns false silently if the app
+        // has quit or refuses cooperative activation — both are correct
+        // failure modes for "user came back to a now-gone window".
+        previousApp?.activate()
+        previousApp = nil
+    }
+
     private func installDismissMonitors() {
         let mask: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown]
         globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] _ in
             guard let self, self.shouldDismissOnClickOutside() else { return }
+            // The user clicked into another app deliberately — focus is
+            // already where they want it. Drop the capture so `hide()` won't
+            // yank them back to the previously-focused app.
+            self.previousApp = nil
             self.hide()
         }
         localMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] event in
