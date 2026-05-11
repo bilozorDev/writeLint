@@ -45,8 +45,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         // Install Carbon hotkey handler and register the saved chord.
+        // `captureFrontmost: true` so PanelController records the previously
+        // frontmost app and restores focus on dismiss — only the hotkey path
+        // opts in (menu-bar item and first-launch summon don't, by design).
         GlobalHotkey.shared.install {
-            PanelController.shared.toggle()
+            PanelController.shared.toggle(captureFrontmost: true)
         }
         GlobalHotkey.shared.setHotkey(HotkeyStore.shared.current)
 
