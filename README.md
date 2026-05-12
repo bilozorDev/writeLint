@@ -1,5 +1,7 @@
 # Write Lint
 
+_On-device proofreader._
+
 A macOS menu-bar app that polishes text — fixes typos, punctuation, capitalization, and minor grammar — using Apple's on-device Foundation Models. Everything runs locally; no text leaves your Mac.
 
 ## What it does
