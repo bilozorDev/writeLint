@@ -147,13 +147,19 @@ private struct SettingsSidebar: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     templatesHeader
+                    // v1.0: only show factory templates (today: Grammar).
+                    // User-created templates and the `+ New` affordance are
+                    // hidden behind a "Coming soon" hint until templates
+                    // ship in v2. PromptStore + TemplateEditor stay intact
+                    // so re-enabling is a one-file UI revert.
                     VStack(spacing: 1) {
-                        ForEach(Array(store.templates.enumerated()), id: \.element.id) { idx, template in
+                        ForEach(visibleTemplates, id: \.element.id) { idx, template in
                             templateRow(idx: idx, template: template)
                         }
                     }
                     .padding(.horizontal, 8)
-                    .padding(.bottom, 8)
+                    comingSoonRow
+                        .padding(.bottom, 8)
 
                     systemHeader
                     VStack(spacing: 1) {
@@ -199,33 +205,39 @@ private struct SettingsSidebar: View {
     /// detail until resolved" semantics).
     private var isDraftEditorVisible: Bool { draft != nil }
 
+    /// Templates visible in the sidebar. v1.0: factory templates only
+    /// (today: Grammar). Enumerated so the row can pick a `⌘N` hint by
+    /// position. Re-enable user-created templates by removing the filter.
+    private var visibleTemplates: [(offset: Int, element: Template)] {
+        Array(store.templates.enumerated())
+            .filter { $0.element.factoryInstructions != nil }
+    }
+
     @ViewBuilder
     private var templatesHeader: some View {
+        // `+ New` is hidden in v1.0 — the templates feature is shipping in
+        // v2. Restore the button (and the `draft = TemplateDraft()` action)
+        // when re-enabling.
         HStack(alignment: .center) {
             Text("TEMPLATES")
                 .font(.system(size: 10, weight: .bold))
                 .tracking(0.7)
                 .foregroundStyle(Palette.sub(dark))
             Spacer()
-            Button {
-                attemptDiscardingDraft {
-                    draft = TemplateDraft()
-                }
-            } label: {
-                HStack(spacing: 3) {
-                    Image(systemName: "plus")
-                        .font(.system(size: 10, weight: .semibold))
-                    Text("New")
-                        .font(.system(size: 11.5, weight: .semibold))
-                }
-                .foregroundStyle(Palette.accent)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("New template")
         }
         .padding(.horizontal, 10)
         .padding(.top, 10)
         .padding(.bottom, 6)
+    }
+
+    @ViewBuilder
+    private var comingSoonRow: some View {
+        Text("More templates coming soon")
+            .font(.system(size: 11.5, weight: .medium))
+            .foregroundStyle(Palette.sub(dark))
+            .padding(.horizontal, 18)
+            .padding(.top, 4)
+            .padding(.bottom, 4)
     }
 
     @ViewBuilder
