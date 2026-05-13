@@ -40,6 +40,7 @@ enum SettingsRoute: Hashable {
     case template(UUID)
     case shortcuts
     case provider
+    case feedback
 }
 
 /// Top-level Settings shell. Owns its own 760×540 chrome (header bar +
@@ -185,6 +186,18 @@ private struct SettingsSidebar: View {
                         ) {
                             attemptDiscardingDraft {
                                 page = .provider
+                            }
+                        }
+                        SidebarRow(
+                            active: !isDraftEditorVisible && page == .feedback,
+                            color: nil,
+                            icon: "envelope",
+                            label: "Help & feedback",
+                            shortcut: nil,
+                            dark: dark
+                        ) {
+                            attemptDiscardingDraft {
+                                page = .feedback
                             }
                         }
                     }
@@ -395,6 +408,8 @@ private struct SettingsDetail: View {
                     ShortcutsBehaviorPage(autoHide: $autoHide, dark: dark)
                 case .provider:
                     AIProviderPage(store: store, dark: dark)
+                case .feedback:
+                    FeedbackPage(store: store, dark: dark)
                 }
             }
         }
