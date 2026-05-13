@@ -214,4 +214,29 @@ struct FeedbackServiceTests {
         #expect(trimmed.contains("L5xxxxxxxxxx"))
         #expect(!trimmed.contains("L1xxxxxxxxxx"))
     }
+
+    // MARK: renderForClipboard
+
+    @Test func renderForClipboardIncludesRecipientAndSubjectHeaders() {
+        // The clipboard payload is plain text — no mailto URL — so a
+        // user pasting into webmail or any other tool sees the
+        // recipient and subject upfront. Blank line between headers
+        // and body matches RFC 5322 conventions.
+        let text = FeedbackService.renderForClipboard(
+            subject: "Linter feedback (1.0 build 7)",
+            body: "stuff broke\n\n--- App info ---\nApp: Linter 1.0"
+        )
+        #expect(text.hasPrefix("To: bilozor.dev@gmail.com\nSubject: Linter feedback (1.0 build 7)\n\n"))
+        #expect(text.contains("stuff broke"))
+        #expect(text.contains("--- App info ---"))
+    }
+
+    @Test func renderForClipboardPreservesBodyVerbatim() {
+        // The body section after the blank line should be byte-for-
+        // byte equal to the input body — clipboard paths don't go
+        // through percent-encoding, so no escaping should happen.
+        let body = "line one\nline two\n— em dash and emoji 🐝 & ampersand"
+        let text = FeedbackService.renderForClipboard(subject: "subj", body: body)
+        #expect(text.hasSuffix("\n\n\(body)"))
+    }
 }

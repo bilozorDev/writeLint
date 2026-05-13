@@ -63,7 +63,7 @@ struct FeedbackPage: View {
             Text("Help & feedback")
                 .font(.system(size: 19, weight: .semibold))
                 .foregroundStyle(Palette.text(dark))
-            Text("Found a bug or have a suggestion? Your default mail client will open with a pre-filled message you can edit before sending. Logs cover this session only — reproduce the issue before sending.")
+            Text("Found a bug or have a suggestion? Compose in your default mail client, or copy the message and send any way you like (Gmail webmail, Slack, etc.). Logs cover this session only — reproduce the issue before sending.")
                 .font(.system(size: 12.5))
                 .foregroundStyle(Palette.sub(dark))
                 .fixedSize(horizontal: false, vertical: true)
@@ -180,8 +180,62 @@ struct FeedbackPage: View {
 
     @ViewBuilder
     private var composeBar: some View {
-        HStack {
+        HStack(spacing: 10) {
             Spacer()
+            // "Copy logs only" — tertiary. Useful when the user wants
+            // to share logs via chat / issue tracker / anywhere
+            // non-email, without dragging app metadata along. Always
+            // enabled (no dependency on description); disabled while a
+            // copy/compose is in flight.
+            Button {
+                Task { await copyLogsOnly() }
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "doc.on.clipboard")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text("Copy logs")
+                        .font(.system(size: 12.5, weight: .medium))
+                }
+                .foregroundStyle(Palette.text(dark))
+                .padding(.horizontal, 11)
+                .padding(.vertical, 7)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(Palette.divider(dark), lineWidth: 0.5)
+                )
+            }
+            .buttonStyle(.plain)
+            .disabled(sending)
+
+            // "Copy message" — secondary. Full To/Subject/Body
+            // plain-text dump so users without a default mail client
+            // (or who prefer webmail) can paste into Gmail compose,
+            // Slack, an issue tracker, etc. Same enablement rule as
+            // Compose: needs a description or logs to carry signal.
+            Button {
+                Task { await copyMessage() }
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "doc.on.doc")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text("Copy message")
+                        .font(.system(size: 12.5, weight: .medium))
+                }
+                .foregroundStyle(Palette.text(dark))
+                .padding(.horizontal, 11)
+                .padding(.vertical, 7)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(Palette.divider(dark), lineWidth: 0.5)
+                )
+            }
+            .buttonStyle(.plain)
+            .disabled(!composeEnabled)
+
+            // "Compose in Mail" — primary. Opens the user's default
+            // mail client. Returns `.mailClientUnavailable` when no
+            // mail handler is configured; the result row tells the
+            // user to use Copy message instead.
             Button {
                 Task { await compose() }
             } label: {
@@ -192,7 +246,7 @@ struct FeedbackPage: View {
                     }
                     Image(systemName: "envelope.fill")
                         .font(.system(size: 12, weight: .semibold))
-                    Text(sending ? "Composing…" : "Compose feedback in Mail")
+                    Text(sending ? "Composing…" : "Compose in Mail")
                         .font(.system(size: 13, weight: .semibold))
                 }
                 .foregroundStyle(.white)
@@ -264,14 +318,42 @@ struct FeedbackPage: View {
             resultMessage = "Couldn't compose feedback. Try again."
             resultIsError = true
         case .mailClientUnavailable:
-            // Surface the recipient so the user has a fallback path
-            // (manual copy → paste into webmail). PM nit-3.
-            resultMessage = "No default mail client. Send to: \(FeedbackService.recipient)"
+            // No default mail handler — point the user at the Copy
+            // message button (which works regardless of mail setup)
+            // and stash the recipient on the pasteboard so they can
+            // paste it into any webmail compose form.
+            resultMessage = "No default mail client. Use “Copy message” and paste into webmail. Address copied: \(FeedbackService.recipient)"
             resultIsError = true
-            // Copy to pasteboard so the address is one-step recoverable.
             let pb = NSPasteboard.general
             pb.clearContents()
             pb.setString(FeedbackService.recipient, forType: .string)
+        }
+    }
+
+    private func copyMessage() async {
+        sending = true
+        let availability = FoundationModelService.shared.availability
+        await FeedbackService.copyMessageToClipboard(
+            description: description,
+            includeLogs: includeLogs,
+            store: store,
+            availability: availability
+        )
+        sending = false
+        resultMessage = "Message copied to clipboard. Paste into your mail app or webmail."
+        resultIsError = false
+    }
+
+    private func copyLogsOnly() async {
+        sending = true
+        let ok = await FeedbackService.copyLogsToClipboard()
+        sending = false
+        if ok {
+            resultMessage = "Logs copied to clipboard."
+            resultIsError = false
+        } else {
+            resultMessage = "No logs available yet — try the polish that triggered the issue, then try again."
+            resultIsError = true
         }
     }
 

@@ -238,13 +238,61 @@ enum FeedbackService {
         return body
     }
 
-    /// Top-level entry point invoked by the Compose button:
-    /// 1. Captures metadata + subject.
-    /// 2. Computes header overhead by composing the body with `logs = ""`
-    ///    and percent-encoding — the actual URL byte cost.
-    /// 3. Calls `collectLogs` with the remaining budget if requested.
-    /// 4. Re-composes the body with the actual logs.
-    /// 5. Builds the URL and asks `NSWorkspace` to open it.
+    /// Assemble the final subject + body the user will send. Captures
+    /// metadata, fetches logs (constrained by the mailto byte budget so
+    /// the same body can also drive a mailto URL), and stitches them
+    /// through `composeBody`. Shared by `sendFeedback` (which opens
+    /// `mailto:`) and `copyMessageToClipboard` (which doesn't) so both
+    /// paths see the exact same content.
+    @MainActor
+    static func prepareMessage(
+        description: String,
+        includeLogs: Bool,
+        store: PromptStore,
+        availability: ModelAvailability
+    ) async -> (subject: String, body: String) {
+        let metadata = Metadata.capture(store: store, availability: availability)
+        let subject = defaultSubject()
+
+        // Header overhead = body byte cost after percent-encoding, when
+        // the logs section is empty. Anything left over is the log
+        // budget. Computed against the percent-encoded form because
+        // that matches the actual mailto URL size, not the raw text —
+        // and we want clipboard copies to fit the same budget so a
+        // user who copies and pastes into a mail-client compose form
+        // doesn't blow past the URL cap if they later switch to the
+        // Compose-in-Mail button.
+        let dryBody = composeBody(description: description, includeLogs: includeLogs, logs: "", metadata: metadata)
+        let percentEncoded = dryBody.addingPercentEncoding(withAllowedCharacters: mailtoValueAllowed) ?? dryBody
+        let overheadBytes = percentEncoded.utf8.count
+        let budgetBytes = max(0, mailtoBodyCapBytes - overheadBytes)
+
+        let logs: String? = includeLogs ? await collectLogs(budgetBytes: budgetBytes) : nil
+        let body = composeBody(description: description, includeLogs: includeLogs, logs: logs, metadata: metadata)
+        return (subject, body)
+    }
+
+    /// Render a clipboard-friendly plain-text version of the message —
+    /// includes `To:` and `Subject:` headers so a user pasting into
+    /// webmail or another tool has the recipient and subject ready to
+    /// transcribe. The blank line between headers and body matches
+    /// RFC 5322 conventions so paste-into-Mail-as-text Just Works in
+    /// most clients.
+    static func renderForClipboard(subject: String, body: String) -> String {
+        """
+        To: \(recipient)
+        Subject: \(subject)
+
+        \(body)
+        """
+    }
+
+    /// Top-level "Compose feedback in Mail" handler. Builds the
+    /// message, builds the mailto URL, asks `NSWorkspace` to open it.
+    /// Returns `.mailClientUnavailable` when the user has no default
+    /// mail client configured — caller surfaces the recipient address
+    /// and the "Copy message" affordance so the user can still send
+    /// manually.
     @MainActor
     static func sendFeedback(
         description: String,
@@ -252,26 +300,56 @@ enum FeedbackService {
         store: PromptStore,
         availability: ModelAvailability
     ) async -> SendResult {
-        let metadata = Metadata.capture(store: store, availability: availability)
-        let subject = defaultSubject()
-
-        // Header overhead = body byte cost after percent-encoding, when
-        // the logs section is empty. Anything left over is the log
-        // budget. Computed against the percent-encoded form because that
-        // matches the actual mailto URL size, not the raw text.
-        let dryBody = composeBody(description: description, includeLogs: includeLogs, logs: "", metadata: metadata)
-        let percentEncoded = dryBody.addingPercentEncoding(withAllowedCharacters: mailtoValueAllowed) ?? dryBody
-        let overheadBytes = percentEncoded.utf8.count
-        let budgetBytes = max(0, mailtoBodyCapBytes - overheadBytes)
-
-        let logs: String? = includeLogs ? await collectLogs(budgetBytes: budgetBytes) : nil
-
-        let body = composeBody(description: description, includeLogs: includeLogs, logs: logs, metadata: metadata)
-
+        let (subject, body) = await prepareMessage(
+            description: description,
+            includeLogs: includeLogs,
+            store: store,
+            availability: availability
+        )
         guard let url = composeMailto(body: body, subject: subject) else {
             return .composeFailed
         }
         let opened = NSWorkspace.shared.open(url)
         return opened ? .opened : .mailClientUnavailable
+    }
+
+    /// "Copy message" handler — writes the full To/Subject/Body to the
+    /// pasteboard so a user with no default mail client (or one who
+    /// prefers webmail) can paste into Gmail compose, Slack, an issue
+    /// tracker, anywhere. Includes the recipient address in the
+    /// pasted text so they don't have to remember it.
+    @MainActor
+    static func copyMessageToClipboard(
+        description: String,
+        includeLogs: Bool,
+        store: PromptStore,
+        availability: ModelAvailability
+    ) async {
+        let (subject, body) = await prepareMessage(
+            description: description,
+            includeLogs: includeLogs,
+            store: store,
+            availability: availability
+        )
+        let text = renderForClipboard(subject: subject, body: body)
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(text, forType: .string)
+    }
+
+    /// "Copy logs only" handler — writes just the last hour of
+    /// `Hexaget.WriteLint` log entries to the pasteboard. Useful when
+    /// the user wants to share logs via chat, an issue tracker, or
+    /// any non-email surface without dragging app metadata along.
+    /// Budget is the full `mailtoBodyCapBytes` since there's no
+    /// description/metadata overhead to subtract.
+    @MainActor
+    static func copyLogsToClipboard() async -> Bool {
+        let logs = await collectLogs(budgetBytes: mailtoBodyCapBytes)
+        guard let logs, !logs.isEmpty else { return false }
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(logs, forType: .string)
+        return true
     }
 }
