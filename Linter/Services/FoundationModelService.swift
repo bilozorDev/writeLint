@@ -123,7 +123,7 @@ enum LintIssue: Equatable {
         case .generationError(let detail):
             return detail
         case .malformedOutput:
-            return "The on-device model returned malformed output, so we kept your original."
+            return "We couldn't get a reliable polish, so we kept your original."
         }
     }
 
@@ -246,6 +246,96 @@ final class FoundationModelService {
         }
     }
 
+    /// Categorization of an error raised by `session.respond(...)` inside the
+    /// per-chunk retry ladder. The deserialize family is matched by substring
+    /// on `localizedDescription` rather than by typed case: we cannot
+    /// pattern-match a hypothetical `GenerationError.decodingFailure`
+    /// (deployment floor is macOS 26.0 and the case shape is undocumented
+    /// here), and substring matching covers both the typed-throw path and
+    /// the generic-`Error` path. The token set is broader than any single
+    /// Apple phrasing so future drift falls through to `.unclassified`,
+    /// which the retry ladder then funnels into the unstructured fallback.
+    internal enum ChunkFailureKind: Equatable {
+        case passThroughGeneration(LintIssue)
+        case deserialize
+        case cancelled
+        case unclassified
+    }
+
+    internal static func classify(_ error: Error) -> ChunkFailureKind {
+        if error is CancellationError { return .cancelled }
+        let nsErr = error as NSError
+        if nsErr.domain == NSCocoaErrorDomain, nsErr.code == NSUserCancelledError {
+            return .cancelled
+        }
+        if let gen = error as? LanguageModelSession.GenerationError,
+           isPassThroughableError(gen) {
+            return .passThroughGeneration(.generationError(detail: friendlyGenerationErrorMessage(gen)))
+        }
+        let desc = error.localizedDescription.lowercased()
+        for needle in ["deserialize", "decode", "generable"] {
+            if desc.contains(needle) { return .deserialize }
+        }
+        return .unclassified
+    }
+
+    /// Removes at most one leading conversational preamble from raw,
+    /// unstructured model output ("Sure, here is …", "Output: …",
+    /// "Polished: …"). Only the colon-suffixed labels (`output:`,
+    /// `polished:`, `polished text:`) and short conversational openers
+    /// (`sure,`/`sure!`/`sure.`) are stripped — open-prefix matching
+    /// against bare words like "Output" over-strips legitimate prose
+    /// ("Output of the function is …"), and the model rarely emits a
+    /// label without a colon when it leaks one at all. A length-ratio
+    /// guard is the final safety net: a strip that drops more than 25%
+    /// of the content is treated as suspicious and skipped — the
+    /// downstream hallucination guards (parens, word-count, leaked-
+    /// phrase) cover any residue.
+    ///
+    /// Only runs on the unstructured (Attempt 3) path. The guided path
+    /// uses `@Generable` so preamble is structurally impossible.
+    internal static func stripPreamble(_ s: String) -> String {
+        let lower = s.lowercased()
+
+        // Colon-bearing labels — longest first so "polished text:" wins
+        // before "polished:" matches.
+        let colonLabels = ["polished text:", "polished:", "output:"]
+        for label in colonLabels {
+            if lower.hasPrefix(label) {
+                return strippedOrOriginal(s, prefixLen: label.count)
+            }
+        }
+        // Conversational openers — must carry punctuation so a plain
+        // "Sure thing it works" doesn't get its first word eaten.
+        let sureOpeners = ["sure,", "sure!", "sure.", "sure:"]
+        for opener in sureOpeners {
+            if lower.hasPrefix(opener) {
+                return strippedOrOriginal(s, prefixLen: opener.count)
+            }
+        }
+        return s
+    }
+
+    /// Helper for `stripPreamble`: walks past a fixed-length prefix and any
+    /// trailing whitespace/newlines, then applies the length-ratio guard.
+    /// Returns the original string if the strip would drop more than 25%
+    /// of the content (heuristic anti-overstrip — protects short legitimate
+    /// outputs like "Output: 42").
+    private static func strippedOrOriginal(_ s: String, prefixLen: Int) -> String {
+        guard let prefixEnd = s.index(s.startIndex, offsetBy: prefixLen, limitedBy: s.endIndex) else {
+            return s
+        }
+        var idx = prefixEnd
+        while idx < s.endIndex, s[idx].isWhitespace || s[idx].isNewline {
+            idx = s.index(after: idx)
+        }
+        let candidate = String(s[idx...])
+        if Double(candidate.count) < Double(s.count) * 0.75 {
+            return s
+        }
+        return candidate
+    }
+
     /// Polish `text` using `instructions` as the entire system prompt sent
     /// to the model. The instructions string is the *only* input that
     /// shapes the model's behavior — no separately-injected few-shot turns,
@@ -334,135 +424,25 @@ final class FoundationModelService {
             // `if let upgraded = ..., upgraded != currentIssue` to avoid
             // spurious notifications.
             var currentIssue: LintIssue?
+            // Per-chunk retry budget. The first failing chunk gets the
+            // full ladder (Attempt 1 → 2 → 3); once any chunk exhausts
+            // retries, subsequent chunks short-circuit (Attempt 1 → 3,
+            // skipping the wider-cap retry). Latency floor for
+            // multi-paragraph all-fail inputs.
+            var allowRetry = true
             for (i, chunk) in chunks.enumerated() {
                 if Task.isCancelled { throw LintError.cancelled }
-                if chunk.isSeparator {
-                    lintLog.debug("chunk \(i): separator (\(chunk.text.count) chars) — passthrough")
-                    output += chunk.text
-                    continue
-                }
-                let trimmed = chunk.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                if trimmed.isEmpty {
-                    lintLog.debug("chunk \(i): blank — passthrough")
-                    output += chunk.text
-                    continue
-                }
-                // Fresh session per chunk so context doesn't bleed between
-                // independent paragraphs. The session's only input is the
-                // user-controlled `instructions` string — examples,
-                // constraints, and rules all live in there.
-                let session = LanguageModelSession(transcript: Self.buildTranscript(instructions: instructions))
-                lintLog.notice("chunk \(i): in=\(Self.quoteForLog(chunk.text), privacy: .private)")
-
-                // Per-chunk options.
-                // - greedy + temperature 0.0: deterministic minimal-edit
-                //   transduction; sampling adds variance that hurts quality
-                //   on this task per the GEC literature (Loem 2023, Coyne
-                //   2023, Staruch 2025).
-                // - maximumResponseTokens tied to chunk length: anti-
-                //   hallucination guard at the decoder. Cap is `chars+256`
-                //   so it accommodates JSON-escape inflation (\n, \"
-                //   etc) plus a token-count buffer beyond the legitimate
-                //   ≤30% growth ceiling the hallucination guard already
-                //   enforces. Floor of 128 protects very short chunks;
-                //   ceiling of 2048 prevents pathological inputs from
-                //   eating the whole 4096-token context window.
-                //
-                // Earlier we used `chars/2 + 32`, which truncated long
-                // outputs mid-string and tripped a deserialize failure
-                // (the guided-generation parser saw an unterminated JSON
-                // value). The looser cap fixes that without giving up
-                // the hallucination protection — that lives in
-                // `hallucinationReason` and runs after generation.
-                let cap = min(2048, max(128, chunk.text.count + 256))
-                let options = GenerationOptions(
-                    sampling: .greedy,
-                    temperature: 0.0,
-                    maximumResponseTokens: cap
+                let (out, issue, exhausted) = try await processChunk(
+                    chunk,
+                    index: i,
+                    instructions: instructions,
+                    allowRetry: allowRetry
                 )
-
-                let raw: String
-                do {
-                    let response = try await session.respond(
-                        to: chunk.text,
-                        generating: LintOutput.self,
-                        // The schema is implicit because the on-device model
-                        // is post-trained on guided generation — sending it
-                        // again costs tokens for no quality gain.
-                        includeSchemaInPrompt: false,
-                        options: options
-                    )
-                    raw = response.content.output
-                } catch let e as LanguageModelSession.GenerationError {
-                    // Pass through on known-benign generation errors:
-                    //   - guardrailViolation: false-positives are common; a
-                    //     polish-helper showing the user's text unchanged is
-                    //     strictly better than throwing.
-                    //   - unsupportedLanguageOrLocale: nothing we can do.
-                    //   - exceededContextWindowSize: rare given paragraph
-                    //     chunking, but clip-and-pass is acceptable.
-                    // Other GenerationError variants (assets downloading,
-                    // etc.) propagate so the user sees the toast.
-                    if Self.isPassThroughableError(e) {
-                        lintLog.notice("chunk \(i): GENERATION ERROR (\(String(describing: e), privacy: .public)) — passing original through")
-                        output += chunk.text
-                        currentIssue = LintIssue.upgrade(currentIssue, with: .generationError(detail: Self.friendlyGenerationErrorMessage(e)))
-                        continue
-                    }
-                    throw e
-                } catch let error {
-                    // Some Foundation Models failures arrive as a generic
-                    // error rather than a `GenerationError` case — most
-                    // notably "Failed to deserialize a Generable type from
-                    // model output", which fires when the structured output
-                    // is malformed (typically truncation by
-                    // `maximumResponseTokens`). Pass through silently rather
-                    // than throwing — better UX than an error toast for what
-                    // is, from the user's perspective, "the polish didn't
-                    // succeed for this chunk." Logged so we can spot a
-                    // pattern if it ever happens consistently.
-                    let desc = error.localizedDescription.lowercased()
-                    if desc.contains("deserialize") || desc.contains("decode") {
-                        lintLog.notice("chunk \(i): DESERIALIZE FAILED (\(error.localizedDescription, privacy: .public)) — passing original through")
-                        output += chunk.text
-                        currentIssue = LintIssue.upgrade(currentIssue, with: .malformedOutput)
-                        continue
-                    }
-                    throw error
+                output += out
+                if let issue {
+                    currentIssue = LintIssue.upgrade(currentIssue, with: issue)
                 }
-                let polished = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-                let cleaned = Self.stripWrappingQuotes(polished)
-                lintLog.notice("chunk \(i): raw=\(Self.quoteForLog(raw), privacy: .private)")
-                if cleaned != polished {
-                    lintLog.notice("chunk \(i): stripped wrapping quotes")
-                }
-                // Hallucination guard. Two policies depending on the failure
-                // mode: structural problems (added parens, leaked instruction
-                // phrases) fall back to the input verbatim — those are
-                // unambiguously broken outputs. Word-count drift (>1.3× /
-                // <0.8×) keeps the model's output and surfaces a soft warning
-                // for the user to judge — drift is sometimes a legitimate
-                // rewrite, especially with non-grammar templates, so blocking
-                // on it produces more false positives than catches.
-                if let reason = Self.hallucinationReason(input: chunk.text, output: cleaned) {
-                    switch reason {
-                    case .wordCountExpansion, .wordCountShrinkage:
-                        lintLog.notice("chunk \(i): DRIFTED (\(reason.description, privacy: .public)) — keeping output, flagging for review")
-                        lintLog.notice("chunk \(i): out=\(Self.quoteForLog(cleaned), privacy: .private)")
-                        output += cleaned
-                        currentIssue = LintIssue.upgrade(currentIssue, with: .drifted(reason: reason.description))
-                    case .addedParens, .leakedPhrase:
-                        lintLog.notice("chunk \(i): HALLUCINATED (\(reason.description, privacy: .public)) — falling back to original")
-                        output += chunk.text
-                        currentIssue = LintIssue.upgrade(currentIssue, with: .hallucinated(reason: reason.description))
-                    }
-                } else if cleaned == chunk.text.trimmingCharacters(in: .whitespacesAndNewlines) {
-                    lintLog.notice("chunk \(i): NO-OP (model returned input verbatim)")
-                    output += cleaned
-                } else {
-                    lintLog.notice("chunk \(i): out=\(Self.quoteForLog(cleaned), privacy: .private)")
-                    output += cleaned
-                }
+                if exhausted { allowRetry = false }
             }
 
             let elapsed = clock.now - start
@@ -491,6 +471,287 @@ final class FoundationModelService {
             lintLog.error("lint failed: \(error.localizedDescription, privacy: .public)")
             throw LintError.underlying(error)
         }
+    }
+
+    /// Per-chunk pipeline with a 3-attempt retry ladder:
+    ///   1. guided (`@Generable LintOutput`), cap = `min(2048, max(128, chars+256))`
+    ///   2. guided, wider cap = `min(4096, max(512, chars*4))` — only when
+    ///      `allowRetry` is true and the Attempt-1 cap isn't already saturated
+    ///   3. unstructured (`session.respond(to:options:)` without `generating:`)
+    ///      with preamble stripping before downstream shaping
+    ///
+    /// `allowRetry` is `true` for chunks before any chunk in this lint has
+    /// hit the wider-cap retry; once one chunk takes the full ladder, the
+    /// caller flips it to `false` and subsequent chunks skip Attempt 2
+    /// (latency floor for multi-paragraph all-fail inputs).
+    ///
+    /// `exhaustedRetries` in the return tuple is `true` whenever the chunk
+    /// reached Attempt 2 or 3 — the caller uses it to flip `allowRetry`.
+    ///
+    /// `Task.isCancelled` is checked before each attempt so a user cancel
+    /// mid-ladder propagates within one `session.respond` latency rather
+    /// than after the full 3-attempt budget.
+    ///
+    /// Internal so tests can reach it via `@testable import` if needed.
+    internal func processChunk(
+        _ chunk: Chunk,
+        index i: Int,
+        instructions: String,
+        allowRetry: Bool
+    ) async throws -> (output: String, issue: LintIssue?, exhaustedRetries: Bool) {
+        if Task.isCancelled { throw CancellationError() }
+        if chunk.isSeparator {
+            lintLog.debug("chunk \(i): separator (\(chunk.text.count) chars) — passthrough")
+            return (chunk.text, nil, false)
+        }
+        let trimmed = chunk.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            lintLog.debug("chunk \(i): blank — passthrough")
+            return (chunk.text, nil, false)
+        }
+
+        // Fresh session per chunk so context doesn't bleed between
+        // independent paragraphs. The session's only input is the
+        // user-controlled `instructions` string — examples, constraints,
+        // and rules all live in there.
+        let session = LanguageModelSession(transcript: Self.buildTranscript(instructions: instructions))
+        lintLog.notice("chunk \(i): in=\(Self.quoteForLog(chunk.text), privacy: .private)")
+
+        // --- Attempt 1: guided, current cap ---
+        //
+        // Cap is `chars+256` so it accommodates JSON-escape inflation
+        // (\n, \" etc) plus a token-count buffer beyond the legitimate
+        // ≤30% growth ceiling the hallucination guard already enforces.
+        // Floor of 128 protects very short chunks; ceiling of 2048
+        // prevents pathological inputs from eating the whole 4096-token
+        // context window.
+        let cap1 = min(2048, max(128, chunk.text.count + 256))
+        lintLog.notice("chunk \(i): attempt=1 cap=\(cap1, privacy: .public)")
+        do {
+            let raw = try await guidedRespond(session: session, prompt: chunk.text, cap: cap1)
+            return shapeGuidedOutput(raw: raw, chunk: chunk, index: i, exhaustedRetries: false)
+        } catch {
+            switch Self.classify(error) {
+            case .cancelled:
+                throw CancellationError()
+            case .passThroughGeneration(let issue):
+                logCatch(i, attempt: 1, error: error)
+                lintLog.notice("chunk \(i): GENERATION ERROR attempt=1 — passing original through")
+                return (chunk.text, issue, false)
+            case .deserialize:
+                logCatch(i, attempt: 1, error: error)
+                if !allowRetry || cap1 >= 2048 {
+                    lintLog.notice("chunk \(i): DESERIALIZE attempt=1 — cap saturated or budget spent, falling back to unstructured")
+                    return try await runUnstructured(session: session, chunk: chunk, index: i)
+                }
+                lintLog.notice("chunk \(i): DESERIALIZE attempt=1 — retrying with wider cap")
+                // Fall through to Attempt 2 below.
+            case .unclassified:
+                logCatch(i, attempt: 1, error: error)
+                lintLog.notice("chunk \(i): UNCLASSIFIED attempt=1 — falling back to unstructured")
+                return try await runUnstructured(session: session, chunk: chunk, index: i)
+            }
+        }
+
+        // --- Attempt 2: guided, wider cap ---
+        //
+        // ~4× the Attempt-1 cap, bounded by the 4096-token context
+        // window. If 4× still doesn't fit, truncation isn't the root
+        // cause and further retries waste latency — Attempt 3
+        // (unstructured) is the recovery path for non-truncation
+        // deserialize failures.
+        if Task.isCancelled { throw CancellationError() }
+        let cap2 = min(4096, max(512, chunk.text.count * 4))
+        lintLog.notice("chunk \(i): attempt=2 cap=\(cap2, privacy: .public)")
+        do {
+            let raw = try await guidedRespond(session: session, prompt: chunk.text, cap: cap2)
+            return shapeGuidedOutput(raw: raw, chunk: chunk, index: i, exhaustedRetries: true)
+        } catch {
+            switch Self.classify(error) {
+            case .cancelled:
+                throw CancellationError()
+            case .passThroughGeneration(let issue):
+                logCatch(i, attempt: 2, error: error)
+                lintLog.notice("chunk \(i): GENERATION ERROR attempt=2 — passing original through")
+                return (chunk.text, issue, true)
+            case .deserialize:
+                logCatch(i, attempt: 2, error: error)
+                lintLog.notice("chunk \(i): DESERIALIZE attempt=2 — falling back to unstructured")
+                return try await runUnstructured(session: session, chunk: chunk, index: i)
+            case .unclassified:
+                logCatch(i, attempt: 2, error: error)
+                lintLog.notice("chunk \(i): UNCLASSIFIED attempt=2 — falling back to unstructured")
+                return try await runUnstructured(session: session, chunk: chunk, index: i)
+            }
+        }
+    }
+
+    /// Attempt 3: unstructured generation (no `@Generable` schema). After
+    /// success the raw text runs through `stripPreamble` (Attempt-3 only)
+    /// then the same `stripWrappingQuotes` + `hallucinationReason`
+    /// pipeline as the guided path. A `.leakedPhrase` hallucination from
+    /// the unstructured path is downgraded to `.malformedOutput` (the
+    /// schema-leak persisted even without guided generation — the user
+    /// can't prompt-tune their way out; correct UX is "couldn't polish
+    /// reliably," not "hallucinated").
+    private func runUnstructured(
+        session: LanguageModelSession,
+        chunk: Chunk,
+        index i: Int
+    ) async throws -> (output: String, issue: LintIssue?, exhaustedRetries: Bool) {
+        if Task.isCancelled { throw CancellationError() }
+        let cap3 = min(4096, max(512, chunk.text.count * 4))
+        lintLog.notice("chunk \(i): UNSTRUCTURED attempt=3 cap=\(cap3, privacy: .public)")
+        do {
+            let raw = try await unstructuredRespond(session: session, prompt: chunk.text, cap: cap3)
+            return shapeUnstructuredOutput(raw: raw, chunk: chunk, index: i)
+        } catch {
+            switch Self.classify(error) {
+            case .cancelled:
+                throw CancellationError()
+            case .passThroughGeneration(let issue):
+                logCatch(i, attempt: 3, error: error)
+                return (chunk.text, issue, true)
+            case .deserialize, .unclassified:
+                logCatch(i, attempt: 3, error: error)
+                lintLog.notice("chunk \(i): ALL ATTEMPTS FAILED — fallback to original, issue=malformedOutput")
+                return (chunk.text, .malformedOutput, true)
+            }
+        }
+    }
+
+    private func guidedRespond(session: LanguageModelSession, prompt: String, cap: Int) async throws -> String {
+        let options = GenerationOptions(
+            sampling: .greedy,
+            temperature: 0.0,
+            maximumResponseTokens: cap
+        )
+        let response = try await session.respond(
+            to: prompt,
+            generating: LintOutput.self,
+            // The schema is implicit because the on-device model is
+            // post-trained on guided generation — sending it again
+            // costs tokens for no quality gain.
+            includeSchemaInPrompt: false,
+            options: options
+        )
+        return response.content.output
+    }
+
+    private func unstructuredRespond(session: LanguageModelSession, prompt: String, cap: Int) async throws -> String {
+        let options = GenerationOptions(
+            sampling: .greedy,
+            temperature: 0.0,
+            maximumResponseTokens: cap
+        )
+        let response = try await session.respond(to: prompt, options: options)
+        return response.content
+    }
+
+    /// Hypothesis-validation log line: captures BOTH the localized
+    /// description (the substring `classify` matches on) AND the typed
+    /// `String(describing:)` form (which reveals whether deserialize
+    /// arrived as a typed `GenerationError.someCase(...)` or as a
+    /// generic Error). Both `.public` — structural diagnostic, no user
+    /// text. Lets us confirm post-ship the framework's error shape
+    /// without re-instrumenting.
+    private func logCatch(_ i: Int, attempt n: Int, error: Error) {
+        lintLog.notice("chunk \(i): catch attempt=\(n, privacy: .public) localized=\(Self.quoteForLog(error.localizedDescription), privacy: .public) raw=\(String(describing: error), privacy: .public)")
+    }
+
+    /// Post-success shaping for the guided path. Trim, strip wrapping
+    /// quotes, then route through the existing hallucination guard.
+    /// Identical to the unstructured shaper except it doesn't run
+    /// `stripPreamble` (guided generation makes preamble structurally
+    /// impossible — running the stripper would be pure overhead).
+    private func shapeGuidedOutput(
+        raw: String,
+        chunk: Chunk,
+        index i: Int,
+        exhaustedRetries: Bool
+    ) -> (output: String, issue: LintIssue?, exhaustedRetries: Bool) {
+        lintLog.notice("chunk \(i): raw=\(Self.quoteForLog(raw), privacy: .private)")
+        let polished = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleaned = Self.stripWrappingQuotes(polished)
+        if cleaned != polished {
+            lintLog.notice("chunk \(i): stripped wrapping quotes")
+        }
+        return resolveHallucination(
+            cleaned: cleaned,
+            chunk: chunk,
+            index: i,
+            exhaustedRetries: exhaustedRetries,
+            fromUnstructured: false
+        )
+    }
+
+    /// Post-success shaping for the unstructured path. Trim, strip
+    /// preamble, strip wrapping quotes, then route through the
+    /// hallucination guard with the `fromUnstructured` flag set (used
+    /// to downgrade `.leakedPhrase` → `.malformedOutput`).
+    private func shapeUnstructuredOutput(
+        raw: String,
+        chunk: Chunk,
+        index i: Int
+    ) -> (output: String, issue: LintIssue?, exhaustedRetries: Bool) {
+        lintLog.notice("chunk \(i): raw=\(Self.quoteForLog(raw), privacy: .private)")
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let depreambled = Self.stripPreamble(trimmed)
+        if depreambled != trimmed {
+            // Length-only log (no content) since preamble residue can
+            // include private user-adjacent text.
+            lintLog.notice("chunk \(i): stripped preamble (\(trimmed.count - depreambled.count, privacy: .public) chars)")
+        }
+        let cleaned = Self.stripWrappingQuotes(depreambled)
+        if cleaned != depreambled {
+            lintLog.notice("chunk \(i): stripped wrapping quotes")
+        }
+        return resolveHallucination(
+            cleaned: cleaned,
+            chunk: chunk,
+            index: i,
+            exhaustedRetries: true,
+            fromUnstructured: true
+        )
+    }
+
+    /// Shared tail for guided + unstructured shaping. Applies the same
+    /// hallucination policy as before (`.wordCount*` keeps the output +
+    /// flags as `.drifted`; `.addedParens` falls back to input as
+    /// `.hallucinated`) with one new branch: a `.leakedPhrase` from the
+    /// unstructured path becomes `.malformedOutput` (see
+    /// `shapeUnstructuredOutput` for why).
+    private func resolveHallucination(
+        cleaned: String,
+        chunk: Chunk,
+        index i: Int,
+        exhaustedRetries: Bool,
+        fromUnstructured: Bool
+    ) -> (output: String, issue: LintIssue?, exhaustedRetries: Bool) {
+        if let reason = Self.hallucinationReason(input: chunk.text, output: cleaned) {
+            switch reason {
+            case .wordCountExpansion, .wordCountShrinkage:
+                lintLog.notice("chunk \(i): DRIFTED (\(reason.description, privacy: .public)) — keeping output, flagging for review")
+                lintLog.notice("chunk \(i): out=\(Self.quoteForLog(cleaned), privacy: .private)")
+                return (cleaned, .drifted(reason: reason.description), exhaustedRetries)
+            case .addedParens:
+                lintLog.notice("chunk \(i): HALLUCINATED (\(reason.description, privacy: .public)) — falling back to original")
+                return (chunk.text, .hallucinated(reason: reason.description), exhaustedRetries)
+            case .leakedPhrase:
+                if fromUnstructured {
+                    lintLog.notice("chunk \(i): LEAKED PHRASE on unstructured (\(reason.description, privacy: .public)) — falling back to original, issue=malformedOutput")
+                    return (chunk.text, .malformedOutput, exhaustedRetries)
+                }
+                lintLog.notice("chunk \(i): HALLUCINATED (\(reason.description, privacy: .public)) — falling back to original")
+                return (chunk.text, .hallucinated(reason: reason.description), exhaustedRetries)
+            }
+        }
+        if cleaned == chunk.text.trimmingCharacters(in: .whitespacesAndNewlines) {
+            lintLog.notice("chunk \(i): NO-OP (model returned input verbatim)")
+            return (cleaned, nil, exhaustedRetries)
+        }
+        lintLog.notice("chunk \(i): out=\(Self.quoteForLog(cleaned), privacy: .private)")
+        return (cleaned, nil, exhaustedRetries)
     }
 
     /// Render a string for log output: wrap in quotes, escape literal newlines

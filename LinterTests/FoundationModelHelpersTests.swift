@@ -1,4 +1,5 @@
 import Testing
+import Foundation
 @testable import Write_Lint
 
 @Suite("FoundationModelService pure helpers — chunking, hallucination guard, log quoting")
@@ -207,5 +208,128 @@ struct FoundationModelHelpersTests {
 
     @Test func quoteForLogEmptyStringReturnsEmptyQuotes() {
         #expect(FoundationModelService.quoteForLog("") == "\"\"")
+    }
+
+    // MARK: classify
+
+    /// Helper: build an `NSError` whose `localizedDescription` matches `desc`.
+    /// Used to exercise the deserialize-substring branch without constructing
+    /// framework-private `LanguageModelSession.GenerationError` cases.
+    private func makeError(_ desc: String) -> Error {
+        NSError(domain: "test", code: 0, userInfo: [NSLocalizedDescriptionKey: desc])
+    }
+
+    @Test func classifyDeserializeMessageMatchesAppleSubstring() {
+        // The literal text reported from App Store v1.0 toasts — the
+        // canonical case the rework exists to handle.
+        let kind = FoundationModelService.classify(
+            makeError("Failed to deserialize a Generable type from model output")
+        )
+        #expect(kind == .deserialize)
+    }
+
+    @Test func classifyDecodeSubstringMatches() {
+        let kind = FoundationModelService.classify(makeError("Failed to decode response"))
+        #expect(kind == .deserialize)
+    }
+
+    @Test func classifyGenerableSubstringMatches() {
+        // Defensive — catches a future Apple phrasing that drops "deserialize"
+        // but keeps "Generable" in the message.
+        let kind = FoundationModelService.classify(makeError("Unable to parse Generable output"))
+        #expect(kind == .deserialize)
+    }
+
+    @Test func classifyCancellationErrorReturnsCancelled() {
+        #expect(FoundationModelService.classify(CancellationError()) == .cancelled)
+    }
+
+    @Test func classifyUserCancelledNSErrorReturnsCancelled() {
+        let e = NSError(domain: NSCocoaErrorDomain, code: NSUserCancelledError)
+        #expect(FoundationModelService.classify(e) == .cancelled)
+    }
+
+    @Test func classifyUnrelatedErrorReturnsUnclassified() {
+        // Unclassified errors flow into the unstructured fallback, not a
+        // raw-error toast. Substring match must NOT trip on noise.
+        let kind = FoundationModelService.classify(makeError("Network connection lost"))
+        #expect(kind == .unclassified)
+    }
+
+    @Test func classifyIsCaseInsensitive() {
+        let kind = FoundationModelService.classify(makeError("FAILED TO DESERIALIZE"))
+        #expect(kind == .deserialize)
+    }
+
+    // MARK: stripPreamble
+
+    @Test func stripPreambleRemovesOutputColon() {
+        // "Output:" is the most common preamble label the on-device model
+        // emits when guided generation is disabled. Strip it + trailing
+        // whitespace.
+        let stripped = FoundationModelService.stripPreamble(
+            "Output: The quick brown fox jumps over the lazy dog every single day."
+        )
+        #expect(stripped == "The quick brown fox jumps over the lazy dog every single day.")
+    }
+
+    @Test func stripPreambleRemovesPolishedColon() {
+        let stripped = FoundationModelService.stripPreamble(
+            "Polished: The quick brown fox jumps over the lazy dog every single day."
+        )
+        #expect(stripped == "The quick brown fox jumps over the lazy dog every single day.")
+    }
+
+    @Test func stripPreamblePrefersLongerLabel() {
+        // "polished text:" must match before "polished:" — otherwise the
+        // shorter prefix would eat the word "text" as content.
+        let stripped = FoundationModelService.stripPreamble(
+            "Polished text: The quick brown fox jumps over the lazy dog every day."
+        )
+        #expect(stripped == "The quick brown fox jumps over the lazy dog every day.")
+    }
+
+    @Test func stripPreambleRemovesSureWithComma() {
+        // Conversational opener — only short punctuated forms match so a
+        // plain "Sure thing it works" doesn't lose its first word.
+        let stripped = FoundationModelService.stripPreamble(
+            "Sure, the quick brown fox jumps over the lazy dog every single day here."
+        )
+        #expect(stripped == "the quick brown fox jumps over the lazy dog every single day here.")
+    }
+
+    @Test func stripPreambleNoOpOnPlainSentence() {
+        let input = "The dog runs fast across the field every single morning."
+        #expect(FoundationModelService.stripPreamble(input) == input)
+    }
+
+    @Test func stripPreambleNoOpWhenNoColonAfterTriggerWord() {
+        // "Output of the function is 42." starts with "Output" but no colon
+        // follows — the colon requirement protects legitimate prose that
+        // happens to start with a label word.
+        let input = "Output of the function is 42 across the whole run."
+        #expect(FoundationModelService.stripPreamble(input) == input)
+    }
+
+    @Test func stripPreambleLengthRatioGuardSavesShortContent() {
+        // "Output: 42" — stripping "Output: " leaves "42" (2/10 chars =
+        // 20%, well under the 75% retain floor). The guard fires; we
+        // return the original so downstream guards can decide.
+        let input = "Output: 42"
+        #expect(FoundationModelService.stripPreamble(input) == input)
+    }
+
+    @Test func stripPreambleIsCaseInsensitive() {
+        let stripped = FoundationModelService.stripPreamble(
+            "SURE, the quick brown fox jumps over the lazy dog every single day here."
+        )
+        #expect(stripped == "the quick brown fox jumps over the lazy dog every single day here.")
+    }
+
+    @Test func stripPreambleNoOpOnPlainSureWithoutPunctuation() {
+        // "Sure thing it works" has no comma/period after "Sure" — must
+        // pass through, otherwise we'd eat "Sure" mid-sentence.
+        let input = "Sure thing it works as expected on every single day."
+        #expect(FoundationModelService.stripPreamble(input) == input)
     }
 }
