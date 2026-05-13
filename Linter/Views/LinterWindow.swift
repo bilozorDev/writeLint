@@ -317,11 +317,15 @@ struct LinterWindow: View {
             // user can copy/paste between the template editor and another
             // app (e.g. pasting a system prompt from notes, copying an
             // API key from a password manager) without losing the panel.
+            // Also suppress while a lint is in flight — dismissing mid-run
+            // cancels the task and discards the in-progress polish, which
+            // is surprising if the user just glanced away or clicked into
+            // another window while waiting.
             // Closure is evaluated at click time — reads the @State
-            // `settingsOpen` through SwiftUI's storage cell, so it sees
-            // the current value even though `.onAppear` only fires once.
+            // through SwiftUI's storage cell, so it sees the current
+            // values even though `.onAppear` only fires once.
             PanelController.shared.shouldDismissOnClickOutside = {
-                !settingsOpen
+                !settingsOpen && !thinking
             }
             PanelController.shared.onHide = {
                 // Preserve typed text across hide/show (Spotlight-style) when
