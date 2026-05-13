@@ -287,9 +287,31 @@ struct FeedbackPage: View {
 
     @ViewBuilder
     private var recipientLine: some View {
-        Text("Sends to \(FeedbackService.recipient)")
+        // The address is clickable to copy — useful when the user wants
+        // to compose feedback in a different surface (webmail, an issue
+        // tracker) without going through the Copy message path. Pointer
+        // cursor on hover makes the affordance discoverable.
+        Button {
+            let pb = NSPasteboard.general
+            pb.clearContents()
+            pb.setString(FeedbackService.recipient, forType: .string)
+            resultMessage = "Address copied: \(FeedbackService.recipient)"
+            resultIsError = false
+        } label: {
+            HStack(spacing: 4) {
+                Text("Sends to ")
+                    .foregroundStyle(Palette.sub(dark))
+                Text(FeedbackService.recipient)
+                    .foregroundStyle(Palette.text(dark))
+                    .underline()
+                Image(systemName: "doc.on.doc")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Palette.sub(dark))
+            }
             .font(.system(size: 11.5))
-            .foregroundStyle(Palette.sub(dark))
+        }
+        .buttonStyle(.plain)
+        .pointerStyle(.link)
     }
 
     // MARK: - Behavior
