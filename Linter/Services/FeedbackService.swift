@@ -152,10 +152,15 @@ enum FeedbackService {
 
     /// Character set used to percent-encode subject and body values. Built
     /// from `.urlQueryAllowed` with the query separators (`&`, `=`, `?`)
-    /// removed so they get encoded as `%26`, `%3D`, `%3F` inside values.
+    /// AND `+` removed:
+    ///   - `&`, `=`, `?` get encoded as `%26`, `%3D`, `%3F` so they don't
+    ///     get parsed as extra mailto query parameters.
+    ///   - `+` gets encoded as `%2B` because some mail clients (notably
+    ///     Gmail webmail) form-decode `+` as space in mailto bodies. A
+    ///     literal "2 + 2" would arrive as "2   2" without this.
     private static let mailtoValueAllowed: CharacterSet = {
         var set = CharacterSet.urlQueryAllowed
-        set.remove(charactersIn: "&=?")
+        set.remove(charactersIn: "&=?+")
         return set
     }()
 

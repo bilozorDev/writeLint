@@ -510,11 +510,16 @@ final class FoundationModelService {
             return (chunk.text, nil, false)
         }
 
-        // Fresh session per chunk so context doesn't bleed between
-        // independent paragraphs. The session's only input is the
-        // user-controlled `instructions` string — examples, constraints,
-        // and rules all live in there.
-        let session = LanguageModelSession(transcript: Self.buildTranscript(instructions: instructions))
+        // Each attempt below builds its OWN `LanguageModelSession` (see
+        // `guidedRespond` / `unstructuredRespond` / `runUnstructured`).
+        // `LanguageModelSession` is transcript-based — every successful
+        // `respond` call appends to the transcript, and Apple's contract
+        // for what happens on a thrown error isn't documented as
+        // "transcript stays clean". A fresh session per attempt
+        // eliminates the theoretical risk that a failed Attempt-1
+        // user-turn lingers in the transcript and biases Attempt 2/3.
+        // The cost is negligible — session init is cheap once the model
+        // weights are prewarmed at app launch.
         lintLog.notice("chunk \(i): in=\(Self.quoteForLog(chunk.text), privacy: .private)")
 
         // --- Attempt 1: guided, current cap ---
@@ -528,7 +533,7 @@ final class FoundationModelService {
         let cap1 = min(2048, max(128, chunk.text.count + 256))
         lintLog.notice("chunk \(i): attempt=1 cap=\(cap1, privacy: .public)")
         do {
-            let raw = try await guidedRespond(session: session, prompt: chunk.text, cap: cap1)
+            let raw = try await guidedRespond(instructions: instructions, prompt: chunk.text, cap: cap1)
             return shapeGuidedOutput(raw: raw, chunk: chunk, index: i, exhaustedRetries: false)
         } catch {
             switch Self.classify(error) {
@@ -540,16 +545,16 @@ final class FoundationModelService {
                 return (chunk.text, issue, false)
             case .deserialize:
                 logCatch(i, attempt: 1, error: error)
-                if !allowRetry || cap1 >= 2048 {
+                if !allowRetry || cap1 == 2048 {
                     lintLog.notice("chunk \(i): DESERIALIZE attempt=1 — cap saturated or budget spent, falling back to unstructured")
-                    return try await runUnstructured(session: session, chunk: chunk, index: i)
+                    return try await runUnstructured(chunk: chunk, instructions: instructions, index: i)
                 }
                 lintLog.notice("chunk \(i): DESERIALIZE attempt=1 — retrying with wider cap")
                 // Fall through to Attempt 2 below.
             case .unclassified:
                 logCatch(i, attempt: 1, error: error)
                 lintLog.notice("chunk \(i): UNCLASSIFIED attempt=1 — falling back to unstructured")
-                return try await runUnstructured(session: session, chunk: chunk, index: i)
+                return try await runUnstructured(chunk: chunk, instructions: instructions, index: i)
             }
         }
 
@@ -564,7 +569,7 @@ final class FoundationModelService {
         let cap2 = min(4096, max(512, chunk.text.count * 4))
         lintLog.notice("chunk \(i): attempt=2 cap=\(cap2, privacy: .public)")
         do {
-            let raw = try await guidedRespond(session: session, prompt: chunk.text, cap: cap2)
+            let raw = try await guidedRespond(instructions: instructions, prompt: chunk.text, cap: cap2)
             return shapeGuidedOutput(raw: raw, chunk: chunk, index: i, exhaustedRetries: true)
         } catch {
             switch Self.classify(error) {
@@ -577,11 +582,11 @@ final class FoundationModelService {
             case .deserialize:
                 logCatch(i, attempt: 2, error: error)
                 lintLog.notice("chunk \(i): DESERIALIZE attempt=2 — falling back to unstructured")
-                return try await runUnstructured(session: session, chunk: chunk, index: i)
+                return try await runUnstructured(chunk: chunk, instructions: instructions, index: i)
             case .unclassified:
                 logCatch(i, attempt: 2, error: error)
                 lintLog.notice("chunk \(i): UNCLASSIFIED attempt=2 — falling back to unstructured")
-                return try await runUnstructured(session: session, chunk: chunk, index: i)
+                return try await runUnstructured(chunk: chunk, instructions: instructions, index: i)
             }
         }
     }
@@ -595,15 +600,15 @@ final class FoundationModelService {
     /// can't prompt-tune their way out; correct UX is "couldn't polish
     /// reliably," not "hallucinated").
     private func runUnstructured(
-        session: LanguageModelSession,
         chunk: Chunk,
+        instructions: String,
         index i: Int
     ) async throws -> (output: String, issue: LintIssue?, exhaustedRetries: Bool) {
         if Task.isCancelled { throw CancellationError() }
         let cap3 = min(4096, max(512, chunk.text.count * 4))
         lintLog.notice("chunk \(i): UNSTRUCTURED attempt=3 cap=\(cap3, privacy: .public)")
         do {
-            let raw = try await unstructuredRespond(session: session, prompt: chunk.text, cap: cap3)
+            let raw = try await unstructuredRespond(instructions: instructions, prompt: chunk.text, cap: cap3)
             return shapeUnstructuredOutput(raw: raw, chunk: chunk, index: i)
         } catch {
             switch Self.classify(error) {
@@ -620,7 +625,14 @@ final class FoundationModelService {
         }
     }
 
-    private func guidedRespond(session: LanguageModelSession, prompt: String, cap: Int) async throws -> String {
+    /// Run a single guided-generation respond against a *fresh* session
+    /// seeded with the user's instructions. Owning session construction
+    /// here (rather than passing one in) guarantees retry attempts see a
+    /// clean transcript — `LanguageModelSession` is transcript-based and
+    /// Apple's contract for transcript state after a thrown error isn't
+    /// documented.
+    private func guidedRespond(instructions: String, prompt: String, cap: Int) async throws -> String {
+        let session = LanguageModelSession(transcript: Self.buildTranscript(instructions: instructions))
         let options = GenerationOptions(
             sampling: .greedy,
             temperature: 0.0,
@@ -638,7 +650,10 @@ final class FoundationModelService {
         return response.content.output
     }
 
-    private func unstructuredRespond(session: LanguageModelSession, prompt: String, cap: Int) async throws -> String {
+    /// Same fresh-session-per-call contract as `guidedRespond`, but for
+    /// the Attempt-3 unstructured fallback path (no `@Generable` schema).
+    private func unstructuredRespond(instructions: String, prompt: String, cap: Int) async throws -> String {
+        let session = LanguageModelSession(transcript: Self.buildTranscript(instructions: instructions))
         let options = GenerationOptions(
             sampling: .greedy,
             temperature: 0.0,

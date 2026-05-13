@@ -85,6 +85,22 @@ struct FeedbackServiceTests {
         #expect(decoded == subject)
     }
 
+    @Test func composeMailtoEncodesPlusSignAsPercent2B() throws {
+        // Some mail clients (notably Gmail webmail) form-decode `+` in
+        // mailto bodies as space. Without explicit encoding, a body like
+        // "2 + 2 = 4" would render as "2   2   4". Assert both the
+        // round-trip equality AND that the URL contains the literal
+        // `%2B` — round-trip alone wouldn't catch the case where the
+        // helper double-encodes (decoding back to "+") and the mail
+        // client still mishandles it.
+        let body = "2 + 2 = 4 plus a literal + sign"
+        let url = try #require(FeedbackService.composeMailto(body: body, subject: "subj"))
+        let decoded = try #require(decodedBody(of: url))
+        #expect(decoded == body)
+        #expect(url.absoluteString.contains("%2B"))
+        #expect(!url.absoluteString.contains("+"))
+    }
+
     // MARK: composeBody
 
     @Test func composeBodyIncludesLogsSectionWhenIncludeLogsTrue() {
