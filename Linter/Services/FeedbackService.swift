@@ -227,7 +227,11 @@ enum FeedbackService {
     /// was dropped, prepends a `... (N older lines omitted)\n` marker.
     /// Keeps at least one line so the email never shows the marker
     /// alone.
-    internal static func trimToBudget(lines: [String], budgetBytes: Int) -> String {
+    ///
+    /// `nonisolated` because `collectLogs` calls it from a detached task;
+    /// the target's default isolation would otherwise pin it to the main
+    /// actor.
+    nonisolated internal static func trimToBudget(lines: [String], budgetBytes: Int) -> String {
         var remaining = lines
         var omitted = 0
         while remaining.count > 1 {

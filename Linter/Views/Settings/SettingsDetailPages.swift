@@ -453,15 +453,9 @@ struct AIProviderPage: View {
             }
 
             // Help line + "Where do I get a key?" link as a single
-            // attributed-style line (Text concatenation lets us style
-            // the link span without an HStack break in mid-paragraph).
-            (
-                Text("Your key is stored locally in macOS Keychain. We never send it anywhere except the provider's API.")
-                    .foregroundStyle(Palette.sub(dark).opacity(0.85))
-                + Text(" ")
-                + Text("Where do I get a key? →")
-                    .foregroundStyle(Palette.accent)
-            )
+            // attributed-style line (interpolating styled Texts lets us
+            // style the link span without an HStack break in mid-paragraph).
+            Text("\(Text("Your key is stored locally in macOS Keychain. We never send it anywhere except the provider's API.").foregroundStyle(Palette.sub(dark).opacity(0.85))) \(Text("Where do I get a key? →").foregroundStyle(Palette.accent))")
             .font(.system(size: 11.5))
             .fixedSize(horizontal: false, vertical: true)
 

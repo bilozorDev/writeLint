@@ -634,7 +634,7 @@ final class FoundationModelService {
     private func guidedRespond(instructions: String, prompt: String, cap: Int) async throws -> String {
         let session = LanguageModelSession(transcript: Self.buildTranscript(instructions: instructions))
         let options = GenerationOptions(
-            sampling: .greedy,
+            samplingMode: .greedy,
             temperature: 0.0,
             maximumResponseTokens: cap
         )
@@ -655,7 +655,7 @@ final class FoundationModelService {
     private func unstructuredRespond(instructions: String, prompt: String, cap: Int) async throws -> String {
         let session = LanguageModelSession(transcript: Self.buildTranscript(instructions: instructions))
         let options = GenerationOptions(
-            sampling: .greedy,
+            samplingMode: .greedy,
             temperature: 0.0,
             maximumResponseTokens: cap
         )

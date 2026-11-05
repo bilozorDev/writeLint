@@ -434,7 +434,7 @@ struct PromptStoreTests {
             )
         ]
         let migrated = PromptStore.migrateV2ToV3(legacy)
-        let entry = try? #require(migrated.first)
+        let entry = migrated.first
         #expect(entry?.id == id)
         #expect(entry?.name == "Custom Name")
         #expect(entry?.instructions == "the body")
