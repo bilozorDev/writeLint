@@ -55,7 +55,7 @@ struct ClaudeBackendTests {
             "type": "message",
             "role": "assistant",
             "content": [["type": "text", "text": text]],
-            "model": "claude-haiku-4-5",
+            "model": "claude-haiku-5-5",
             "stop_reason": "end_turn",
         ]
         let body = try! JSONSerialization.data(withJSONObject: payload)
@@ -88,7 +88,7 @@ struct ClaudeBackendTests {
             text: "hello",
             instructions: "polish please",
             apiKey: "sk-ant-test-key",
-            model: .haiku45
+            model: .haiku55
         )
 
         let req = try #require(capturedRequest)
@@ -128,12 +128,12 @@ struct ClaudeBackendTests {
             text: "hello",
             instructions: "polish please",
             apiKey: "sk",
-            model: .sonnet46
+            model: .sonnet55
         )
 
         let body = try #require(capturedBody)
         let parsed = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
-        #expect(parsed["model"] as? String == "claude-sonnet-4-6")
+        #expect(parsed["model"] as? String == "claude-sonnet-5-5")
         #expect(parsed["system"] as? String == "polish please")
         let messages = try #require(parsed["messages"] as? [[String: Any]])
         #expect(messages.count == 1)
@@ -154,7 +154,7 @@ struct ClaudeBackendTests {
             text: "helo world",
             instructions: "fix grammar",
             apiKey: "sk",
-            model: .haiku45
+            model: .haiku55
         )
         #expect(result.output == "Hello, world.")
         #expect(result.issue == nil)
@@ -171,7 +171,7 @@ struct ClaudeBackendTests {
             text: "helo world",
             instructions: "fix grammar",
             apiKey: "sk",
-            model: .haiku45
+            model: .haiku55
         )
         #expect(result.output == "Hello, world.")
     }
@@ -189,7 +189,7 @@ struct ClaudeBackendTests {
             text: "",
             instructions: "polish",
             apiKey: "sk",
-            model: .haiku45
+            model: .haiku55
         )
         #expect(result.output == "")
         #expect(requestCount == 0)
@@ -208,7 +208,7 @@ struct ClaudeBackendTests {
             text: "hello",
             instructions: "polish",
             apiKey: "sk-bad",
-            model: .haiku45
+            model: .haiku55
         )
         // Pass-through: chunk falls back to the original input, issue is
         // surfaced via LintResult.issue. 401 should clearly point at the key.
@@ -232,7 +232,7 @@ struct ClaudeBackendTests {
             text: "hello",
             instructions: "polish",
             apiKey: "sk",
-            model: .haiku45
+            model: .haiku55
         )
         #expect(result.output == "hello")
         switch result.issue {
@@ -254,7 +254,7 @@ struct ClaudeBackendTests {
             text: "hello",
             instructions: "polish",
             apiKey: "sk",
-            model: .haiku45
+            model: .haiku55
         )
         #expect(result.output == "hello")
         switch result.issue {
@@ -276,7 +276,7 @@ struct ClaudeBackendTests {
                 "type": "message",
                 "role": "assistant",
                 "content": [["type": "text", "text": "I can't help with that."]],
-                "model": "claude-haiku-4-5",
+                "model": "claude-haiku-5-5",
                 "stop_reason": "refusal",
                 "stop_details": ["category": "harmful", "explanation": "Request involves prohibited content."],
             ]
@@ -290,7 +290,7 @@ struct ClaudeBackendTests {
             text: "hello",
             instructions: "polish",
             apiKey: "sk",
-            model: .haiku45
+            model: .haiku55
         )
         // Refusal must NOT leak the refusal text into the polish — the chunk
         // falls back to the original input, and the issue clearly attributes
@@ -320,7 +320,7 @@ struct ClaudeBackendTests {
                 "type": "message",
                 "role": "assistant",
                 "content": [["type": "text", "text": "Hello, wor"]],
-                "model": "claude-haiku-4-5",
+                "model": "claude-haiku-5-5",
                 "stop_reason": "max_tokens",
             ]
             let body = try! JSONSerialization.data(withJSONObject: payload)
@@ -333,7 +333,7 @@ struct ClaudeBackendTests {
             text: "hello world",
             instructions: "polish",
             apiKey: "sk",
-            model: .haiku45
+            model: .haiku55
         )
         #expect(result.output == "hello world")
         switch result.issue {
@@ -345,10 +345,12 @@ struct ClaudeBackendTests {
         }
     }
 
-    @Test func effortIncludedForSonnetButOmittedForHaiku() async throws {
+    @Test func perModelRequestShape() async throws {
         let (backend, url) = Self.makeBackend()
         nonisolated(unsafe) var capturedBodies: [Data] = []
+        nonisolated(unsafe) var capturedBetas: [String?] = []
         StubProtocol.handler = { request in
+            capturedBetas.append(request.value(forHTTPHeaderField: "anthropic-beta"))
             let body: Data = {
                 if let stream = request.httpBodyStream {
                     stream.open(); defer { stream.close() }
@@ -367,26 +369,106 @@ struct ClaudeBackendTests {
         }
         defer { StubProtocol.handler = nil }
 
-        // Haiku 4.5 errors on output_config.effort — the field must be
-        // absent from the request body entirely.
-        _ = try await backend.lint(text: "hello", instructions: "p", apiKey: "sk", model: .haiku45)
+        // Haiku 5.5 — the fast path: low effort, thinking off.
+        _ = try await backend.lint(text: "hello", instructions: "p", apiKey: "sk", model: .haiku55)
         let haikuBody = try #require(capturedBodies.first)
         let haikuParsed = try #require(try JSONSerialization.jsonObject(with: haikuBody) as? [String: Any])
-        #expect(haikuParsed["output_config"] == nil)
+        #expect(haikuParsed["model"] as? String == "claude-haiku-5-5")
+        #expect((haikuParsed["output_config"] as? [String: Any])?["effort"] as? String == "low")
+        #expect((haikuParsed["thinking"] as? [String: Any])?["type"] as? String == "disabled")
 
-        // Sonnet 4.6 supports effort — should send "low" for grammar polish.
-        _ = try await backend.lint(text: "hello", instructions: "p", apiKey: "sk", model: .sonnet46)
-        let sonnetBody = try #require(capturedBodies.dropFirst().first)
-        let sonnetParsed = try #require(try JSONSerialization.jsonObject(with: sonnetBody) as? [String: Any])
-        let outputConfig = try #require(sonnetParsed["output_config"] as? [String: Any])
-        #expect(outputConfig["effort"] as? String == "low")
+        // Sonnet 5.5 and Opus 5.5 reject `thinking: disabled` with a 400,
+        // so the field must be absent (adaptive thinking, kept short by
+        // low effort).
+        for (offset, model) in [ClaudeModel.sonnet55, .opus55].enumerated() {
+            _ = try await backend.lint(text: "hello", instructions: "p", apiKey: "sk", model: model)
+            let body = try #require(capturedBodies.dropFirst(offset + 1).first)
+            let parsed = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+            #expect(parsed["model"] as? String == model.rawValue)
+            #expect((parsed["output_config"] as? [String: Any])?["effort"] as? String == "low")
+            #expect(parsed["thinking"] == nil)
+        }
 
-        // Opus 4.7 also supports effort.
-        _ = try await backend.lint(text: "hello", instructions: "p", apiKey: "sk", model: .opus47)
-        let opusBody = try #require(capturedBodies.dropFirst(2).first)
-        let opusParsed = try #require(try JSONSerialization.jsonObject(with: opusBody) as? [String: Any])
-        let opusOutputConfig = try #require(opusParsed["output_config"] as? [String: Any])
-        #expect(opusOutputConfig["effort"] as? String == "low")
+        // No refusal fallback on any model: a declined chunk is never
+        // re-run elsewhere, so neither the `fallbacks` field nor any beta
+        // header is sent. No sampling parameters either — non-default
+        // values 400.
+        #expect(capturedBetas.count == 3 && capturedBetas.allSatisfy { $0 == nil })
+        for body in capturedBodies {
+            let parsed = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+            #expect(parsed["fallbacks"] == nil)
+            #expect(parsed["temperature"] == nil && parsed["top_p"] == nil && parsed["top_k"] == nil)
+            #expect((parsed["max_tokens"] as? Int ?? 0) >= 8192)
+        }
+    }
+
+    @Test func textIsReadByBlockTypeNotPosition() async throws {
+        let (backend, url) = Self.makeBackend()
+        StubProtocol.handler = { _ in
+            // Shape of a Sonnet 5.5 / Opus 5.5 response: an empty-text
+            // `thinking` block ahead of the answer. Only `text` blocks are
+            // the polish.
+            let payload: [String: Any] = [
+                "id": "msg_test",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    ["type": "thinking", "thinking": "", "signature": "sig"],
+                    ["type": "text", "text": "Hello, world."],
+                ],
+                "model": "claude-opus-5-5",
+                "stop_reason": "end_turn",
+            ]
+            let body = try! JSONSerialization.data(withJSONObject: payload)
+            let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: nil)!
+            return (response, body)
+        }
+        defer { StubProtocol.handler = nil }
+
+        let result = try await backend.lint(
+            text: "helo world",
+            instructions: "fix grammar",
+            apiKey: "sk",
+            model: .opus55
+        )
+        #expect(result.output == "Hello, world.")
+        #expect(result.issue == nil)
+    }
+
+    @Test func classifierRefusalWithEmptyContentFallsBack() async throws {
+        let (backend, url) = Self.makeBackend()
+        StubProtocol.handler = { _ in
+            // A safety classifier that declines before any output returns
+            // an empty `content` array, and `stop_details.explanation` is
+            // not guaranteed.
+            let payload: [String: Any] = [
+                "id": "msg_test",
+                "type": "message",
+                "role": "assistant",
+                "content": [[String: Any]](),
+                "model": "claude-haiku-5-5",
+                "stop_reason": "refusal",
+                "stop_details": ["type": "refusal", "category": "cyber"],
+            ]
+            let body = try! JSONSerialization.data(withJSONObject: payload)
+            let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: nil)!
+            return (response, body)
+        }
+        defer { StubProtocol.handler = nil }
+
+        let result = try await backend.lint(
+            text: "hello",
+            instructions: "polish",
+            apiKey: "sk",
+            model: .haiku55
+        )
+        #expect(result.output == "hello")
+        switch result.issue {
+        case .generationError(let detail):
+            #expect(detail.localizedCaseInsensitiveContains("declined"))
+        default:
+            Issue.record("expected generationError, got \(String(describing: result.issue))")
+        }
     }
 
     @Test func malformedJSONFallsBackGracefully() async throws {
@@ -402,7 +484,7 @@ struct ClaudeBackendTests {
             text: "hello",
             instructions: "polish",
             apiKey: "sk",
-            model: .haiku45
+            model: .haiku55
         )
         // Malformed responses surface as `LintError.underlying` from the
         // outer catch — but the inner per-chunk catch only handles
@@ -447,7 +529,7 @@ struct ClaudeBackendTests {
             text: "para one\n\npara two",
             instructions: "uppercase",
             apiKey: "sk",
-            model: .haiku45
+            model: .haiku55
         )
         #expect(result.output == "PARA ONE\n\nPARA TWO")
     }

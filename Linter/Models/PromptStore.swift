@@ -33,39 +33,59 @@ enum CloudProvider: String, CaseIterable, Identifiable {
 /// Available Claude models for the cloud backend. `rawValue` is the model
 /// identifier sent in the Anthropic Messages API request body.
 enum ClaudeModel: String, CaseIterable, Identifiable {
-    case haiku45 = "claude-haiku-4-5"
-    case sonnet46 = "claude-sonnet-4-6"
-    case opus47 = "claude-opus-4-7"
+    // Order matters: the first case is the default and the one the Settings
+    // picker badges as recommended. Haiku leads because it's the fastest.
+    case haiku55 = "claude-haiku-5-5"
+    case sonnet55 = "claude-sonnet-5-5"
+    case opus55 = "claude-opus-5-5"
 
     var id: String { rawValue }
+
+    /// Resolve a value persisted under `claudeModel.v1`. Builds before the
+    /// Claude 5.5 update stored the previous generation's identifiers; map
+    /// each to its same-tier successor so an upgrading user keeps the tier
+    /// they picked instead of silently dropping back to the default.
+    init?(persisted raw: String) {
+        if let model = ClaudeModel(rawValue: raw) {
+            self = model
+            return
+        }
+        switch raw {
+        case "claude-haiku-4-5": self = .haiku55
+        case "claude-sonnet-4-6": self = .sonnet55
+        case "claude-opus-4-7": self = .opus55
+        default: return nil
+        }
+    }
 
     /// Human-friendly label shown in the Settings picker and the footer.
     var displayName: String {
         switch self {
-        case .haiku45: return "Claude Haiku 4.5"
-        case .sonnet46: return "Claude Sonnet 4.6"
-        case .opus47: return "Claude Opus 4.7"
+        case .haiku55: return "Claude Haiku 5.5"
+        case .sonnet55: return "Claude Sonnet 5.5"
+        case .opus55: return "Claude Opus 5.5"
         }
     }
 
     /// Short label used in the in-panel footer alongside "Cloud · …".
     var footerLabel: String {
         switch self {
-        case .haiku45: return "Haiku 4.5"
-        case .sonnet46: return "Sonnet 4.6"
-        case .opus47: return "Opus 4.7"
+        case .haiku55: return "Haiku 5.5"
+        case .sonnet55: return "Sonnet 5.5"
+        case .opus55: return "Opus 5.5"
         }
     }
 
-    /// Whether this model accepts `output_config.effort`. Sending it to a
-    /// model that doesn't support it (Haiku 4.5) returns a 400. Sonnet 4.6,
-    /// Opus 4.6, and Opus 4.7 all accept it. Grammar polishing is a short,
-    /// scoped task — when the model supports effort, the Claude backend
-    /// sends `"low"` to minimize latency and token usage.
-    var supportsEffort: Bool {
+    /// Whether requests turn thinking off (`thinking: {"type": "disabled"}`).
+    /// All three models think by default, which adds latency a grammar
+    /// polish doesn't need. Haiku 5.5 accepts `disabled` (at effort `high`
+    /// or below), so the fast path skips thinking entirely. Sonnet 5.5 and
+    /// Opus 5.5 reject `disabled` with a 400 — there the backend leaves
+    /// thinking adaptive and relies on `effort: "low"` to keep it short.
+    var disablesThinking: Bool {
         switch self {
-        case .haiku45: return false
-        case .sonnet46, .opus47: return true
+        case .haiku55: return true
+        case .sonnet55, .opus55: return false
         }
     }
 }
@@ -408,10 +428,15 @@ final class PromptStore {
         precondition(!loadedTemplates.isEmpty, "PromptStore.templates must never be empty after init")
 
         if let raw = defaults.string(forKey: Self.claudeModelKey),
-           let model = ClaudeModel(rawValue: raw) {
+           let model = ClaudeModel(persisted: raw) {
             self.selectedClaudeModel = model
+            // A previous-generation identifier was mapped to its successor;
+            // write the new one back so the mapping only runs once.
+            if model.rawValue != raw {
+                defaults.set(model.rawValue, forKey: Self.claudeModelKey)
+            }
         } else {
-            self.selectedClaudeModel = .haiku45
+            self.selectedClaudeModel = .haiku55
         }
         if let raw = defaults.string(forKey: Self.openaiModelKey),
            let model = OpenAIModel(rawValue: raw) {

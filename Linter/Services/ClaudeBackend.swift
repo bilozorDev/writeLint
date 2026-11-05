@@ -29,7 +29,14 @@ final class ClaudeBackend {
     /// are cheaper than the latency hit of a too-tight cap forcing a retry,
     /// and (b) the hallucination guard's word-count check is disabled on
     /// this path anyway, so the structural anti-runaway is at the API layer.
-    private static let maxTokensPerChunk = 2048
+    ///
+    /// Sized for more than the polish itself: on Sonnet 5.5 and Opus 5.5
+    /// thinking can't be turned off and its tokens count toward this cap
+    /// even though the text isn't returned, and the 5.5 tokenizer counts
+    /// the same text as roughly 30% more tokens than Haiku 4.5 did. A cap
+    /// that only fit the reply would trip `stop_reason: "max_tokens"` and
+    /// drop the chunk back to the original.
+    private static let maxTokensPerChunk = 8192
 
     init(
         session: URLSession = .shared,
@@ -164,9 +171,12 @@ final class ClaudeBackend {
             messages: [.init(role: "user", content: chunk)],
             // Grammar polishing is a short, scoped task — `low` is the
             // right cost/latency tradeoff per Anthropic's effort guide.
-            // Haiku 4.5 doesn't accept the field and would 400, so omit
-            // the whole `output_config` object on that model.
-            output_config: model.supportsEffort ? .init(effort: "low") : nil
+            // Set explicitly on every model: the defaults differ (`medium`
+            // on Haiku 5.5 and Opus 5.5, `high` on Sonnet 5.5).
+            output_config: .init(effort: "low"),
+            // Nil omits the field, leaving thinking adaptive — the only
+            // mode Sonnet 5.5 and Opus 5.5 accept.
+            thinking: model.disablesThinking ? .init(type: "disabled") : nil
         )
         request.httpBody = try JSONEncoder().encode(body)
 
@@ -205,12 +215,13 @@ final class ClaudeBackend {
             } catch {
                 throw ClaudeError.malformedResponse
             }
-            // Refusals carry a 200 with `content` populated and
-            // `stop_reason: "refusal"`. The text in `content` is the
-            // refusal message ("I can't help with that"), not a polish —
-            // surface it as its own error case so the toast reads
-            // "Claude declined…" instead of treating the refusal text as
-            // the polished output.
+            // Refusals carry a 200 with `stop_reason: "refusal"`. `content`
+            // is either empty (a safety classifier declined before any
+            // output) or a refusal message ("I can't help with that") —
+            // never a polish — so surface it as its own error case and the
+            // toast reads "Claude declined…" instead of treating that text
+            // as the polished output. Deliberately no retry on another
+            // model: a declined chunk keeps the user's original text.
             if decoded.stop_reason == "refusal" {
                 throw ClaudeError.refused(explanation: decoded.stop_details?.explanation)
             }
@@ -225,10 +236,9 @@ final class ClaudeBackend {
             if decoded.stop_reason == "max_tokens" {
                 throw ClaudeError.truncated
             }
-            // Concatenate every text block. In practice the Messages API
-            // returns a single text block for a non-tool-use request, but
-            // the schema is an array — defending against a future variant
-            // is one line.
+            // Concatenate every text block, selecting by `type` rather than
+            // position: a response can lead with `thinking` blocks (empty
+            // text — thinking is on for Sonnet 5.5 / Opus 5.5).
             let combined = decoded.content
                 .compactMap { $0.type == "text" ? $0.text : nil }
                 .joined()
@@ -259,13 +269,19 @@ final class ClaudeBackend {
         let max_tokens: Int
         let system: String
         let messages: [Message]
-        let output_config: OutputConfig?
+        let output_config: OutputConfig
+        // Omitted from the JSON when nil (synthesized `encodeIfPresent`) —
+        // required, since `disabled` is a 400 on Sonnet 5.5 / Opus 5.5.
+        let thinking: Thinking?
         struct Message: Encodable {
             let role: String
             let content: String
         }
         struct OutputConfig: Encodable {
             let effort: String
+        }
+        struct Thinking: Encodable {
+            let type: String
         }
     }
 

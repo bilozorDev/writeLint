@@ -820,10 +820,10 @@ struct LinterWindow: View {
 /// - OpenAI · &lt;current model&gt; — only if `hasOpenAIKey`
 ///
 /// Two visual styles for the trigger:
-/// - `.compact` — `"Claude · Haiku 4.5"` / `"on-device"`. Used in the
+/// - `.compact` — `"Claude · Haiku 5.5"` / `"on-device"`. Used in the
 ///   per-result bars where space is at a premium and the provider is
 ///   disambiguated by the cloud glyph.
-/// - `.privacyFramed` — `"Cloud · Haiku 4.5"` / `"Private · on-device"`.
+/// - `.privacyFramed` — `"Cloud · Haiku 5.5"` / `"Private · on-device"`.
 ///   Used in `FooterHint` where the message frames the privacy posture
 ///   rather than the brand.
 struct BackendBadge: View {
@@ -868,7 +868,7 @@ struct BackendBadge: View {
     }
 
     /// Label shown for each row inside the popped-open menu. Always the
-    /// brand-prefixed form (`"Claude · Haiku 4.5"`) regardless of the
+    /// brand-prefixed form (`"Claude · Haiku 5.5"`) regardless of the
     /// trigger's style — inside the menu the user is choosing among
     /// backends, so brand framing is what they want to see.
     private func menuOptionLabel(for backend: LintBackend) -> String {
@@ -1174,7 +1174,7 @@ private struct FooterHint: View {
             }
             Spacer()
             // BackendBadge renders the lock/cloud glyph + privacy
-            // framing ("Private · on-device" / "Cloud · Haiku 4.5"),
+            // framing ("Private · on-device" / "Cloud · Haiku 5.5"),
             // and on cloud backends becomes a clickable model picker
             // so the user can switch models without leaving the
             // panel. The active-template indicator was removed in v2 —

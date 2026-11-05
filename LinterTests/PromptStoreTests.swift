@@ -503,4 +503,42 @@ struct PromptStoreTests {
         #expect(scratch.defaults.data(forKey: "templates.v3") != nil)
         #expect(scratch.defaults.data(forKey: "templates.v2") == nil)
     }
+
+    // MARK: Claude model selection
+
+    @Test func defaultClaudeModelIsHaiku() {
+        let scratch = ScratchDefaults.make()
+        defer { scratch.cleanup() }
+        let store = Self.makeStore(scratch)
+        #expect(store.selectedClaudeModel == .haiku55)
+        #expect(ClaudeModel.allCases.first == .haiku55, "first case is the one Settings badges as recommended")
+    }
+
+    /// A model picked on a build that predates the Claude 5.5 update is
+    /// stored under its old identifier. It must resolve to the same tier's
+    /// successor (not silently reset to the default) and be rewritten so
+    /// the stored value is a current identifier.
+    @Test(arguments: [
+        ("claude-haiku-4-5", ClaudeModel.haiku55),
+        ("claude-sonnet-4-6", ClaudeModel.sonnet55),
+        ("claude-opus-4-7", ClaudeModel.opus55),
+    ])
+    func previousGenerationSelectionMapsToSuccessor(stored: String, expected: ClaudeModel) {
+        let scratch = ScratchDefaults.make()
+        defer { scratch.cleanup() }
+        scratch.defaults.set(stored, forKey: "claudeModel.v1")
+        let store = Self.makeStore(scratch)
+        #expect(store.selectedClaudeModel == expected)
+        #expect(scratch.defaults.string(forKey: "claudeModel.v1") == expected.rawValue)
+    }
+
+    @Test func currentAndUnknownStoredModels() {
+        let scratch = ScratchDefaults.make()
+        defer { scratch.cleanup() }
+        scratch.defaults.set("claude-opus-5-5", forKey: "claudeModel.v1")
+        #expect(Self.makeStore(scratch).selectedClaudeModel == .opus55)
+
+        scratch.defaults.set("not-a-model", forKey: "claudeModel.v1")
+        #expect(Self.makeStore(scratch).selectedClaudeModel == .haiku55)
+    }
 }

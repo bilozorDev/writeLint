@@ -10,7 +10,7 @@ struct ThinkingDescriptor: Equatable {
     /// SF Symbol name for the right-side tag.
     let glyph: String
     /// Right-side tag text — model name (e.g. "Foundation Models",
-    /// "Claude Haiku 4.5", "GPT-4.1 mini").
+    /// "Claude Haiku 5.5", "GPT-4.1 mini").
     let tagText: String
 
     static let onDevice = ThinkingDescriptor(

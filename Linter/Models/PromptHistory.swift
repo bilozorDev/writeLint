@@ -9,7 +9,7 @@ struct PromptEntry: Identifiable, Codable, Equatable, Hashable {
     /// view can recompute the same edit set later.
     var polished: String
     /// Human-readable label of the backend that produced this polish — e.g.
-    /// `"on-device"` or `"Claude · Haiku 4.5"`. Shown in the history-detail
+    /// `"on-device"` or `"Claude · Haiku 5.5"`. Shown in the history-detail
     /// header so the user can tell at a glance which model handled it.
     var backendLabel: String
     var date: Date
