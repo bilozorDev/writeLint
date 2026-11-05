@@ -57,7 +57,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // summons the panel doesn't pay the 100–300 ms cold-start tax.
         FoundationModelService.shared.prewarm()
 
-        // Show on first launch so the user sees the app immediately.
+        // Show the panel only on the first-ever launch so the user sees the
+        // app immediately; every later launch (including launch-at-login and
+        // manual relaunch) starts silently in the menu bar — otherwise an
+        // enabled login item would pop the panel on every boot.
+        //
         // Suppressed under XCTest: the unit/integration tests use Linter.app
         // as a test host, so without this gate every `xcodebuild test`
         // summons the floating panel — the dim material + drop shadow read
@@ -65,8 +69,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // dictionary contains `XCTestConfigurationFilePath` only during a
         // test run, never in normal launches.
         if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
-            PanelController.shared.show()
+            let key = "hasLaunchedBefore.v1"
+            let d = UserDefaults.standard
+            // v1.0 set no first-launch flag. Seed it for genuine upgraders
+            // so the onboarding panel doesn't blip once on update.
+            // `promptHistory.v3` is written only by
+            // PromptHistory.recordAccepted (NOT by PromptHistory.init on a
+            // fresh install), so its presence is a reliable "this user has
+            // actually used the app before" signal.
+            if d.object(forKey: key) == nil && d.data(forKey: "promptHistory.v3") != nil {
+                d.set(true, forKey: key)
+            }
+            if !d.bool(forKey: key) {
+                d.set(true, forKey: key)
+                PanelController.shared.show()
+            }
         }
+    }
+
+    // Double-clicking the app in Finder/Launchpad while it's already running
+    // in the menu bar should resurface the panel — standard macOS behavior,
+    // and the path the first-launch gate above newly exposes. Uses the same
+    // `show()` the menu-bar item uses (no frontmost capture, by design).
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+        PanelController.shared.show()
+        return true
     }
 }
 

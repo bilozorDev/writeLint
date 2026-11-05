@@ -36,10 +36,52 @@ struct ShortcutsBehaviorPage: View {
                             .labelsHidden()
                             .toggleStyle(.switch)
                     }
+                    Rectangle().fill(Palette.divider(dark)).frame(height: 1)
+
+                    settingRow(
+                        icon: "power",
+                        title: "Launch at login",
+                        subtitle: "Starts Write Lint in your menu bar at login."
+                    ) {
+                        // Bound to the system-truth store. Reading
+                        // `.isEnabled` here is what registers the
+                        // Observation dependency that refreshes this row.
+                        Toggle("", isOn: Binding(
+                            get: { LaunchAtLoginStore.shared.isEnabled },
+                            set: { LaunchAtLoginStore.shared.setEnabled($0) }
+                        ))
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                    }
+                    // Shown only while the user has disabled the item in
+                    // System Settings: register() is a no-op there, the
+                    // toggle above snaps back off, and this explains why.
+                    // Visibility is bound to `requiresApproval` (Observation)
+                    // — it auto-hides when that flips false; no manual reset.
+                    if LaunchAtLoginStore.shared.requiresApproval {
+                        HStack(spacing: 6) {
+                            Text("Turned off in System Settings. Re-enable it under Login Items.")
+                                .font(.system(size: 12))
+                                .foregroundStyle(Palette.sub(dark))
+                            Button("Open Login Items settings") {
+                                LaunchAtLoginStore.shared.openLoginItemsSettings()
+                            }
+                            .buttonStyle(.plain)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Palette.accent)
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.horizontal, 22)
+                        .padding(.bottom, 14)
+                    }
                 }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        // System is the source of truth for launch-at-login; re-sync each
+        // time this page (the only place the value is shown) appears, so a
+        // change made directly in System Settings is reflected.
+        .onAppear { LaunchAtLoginStore.shared.refresh() }
     }
 
     @ViewBuilder
