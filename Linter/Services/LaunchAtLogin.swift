@@ -35,6 +35,25 @@ nonisolated func loginItemState(for status: SMAppService.Status) -> LoginItemSta
     }
 }
 
+/// Whether `event` — the Apple event that launched the process — says the
+/// system started the app as a login item rather than the user opening it.
+/// The system marks a login launch by putting `keyAELaunchedAsLogInItem` in
+/// the open-application event's `keyAEPropData` parameter; a launch from
+/// Finder, Launchpad, Spotlight or `open` carries no such marker.
+///
+/// Pure (takes the descriptor instead of reading
+/// `NSAppleEventManager.shared().currentAppleEvent` itself) so it is a
+/// unit-test seam, like `loginItemState(for:)` above. A nil or unrelated
+/// event is "not a login launch", so any failure to detect errs toward
+/// showing the panel.
+nonisolated func isLoginItemLaunch(_ event: NSAppleEventDescriptor?) -> Bool {
+    guard let event,
+          event.eventClass == AEEventClass(kCoreEventClass),
+          event.eventID == AEEventID(kAEOpenApplication) else { return false }
+    return event.paramDescriptor(forKeyword: AEKeyword(keyAEPropData))?.enumCodeValue
+        == OSType(keyAELaunchedAsLogInItem)
+}
+
 /// Owns the app's "launch at login" state. The **system** is the source of
 /// truth (`SMAppService.mainApp.status`), not UserDefaults — so the toggle
 /// never drifts from a change the user makes directly in System Settings.
